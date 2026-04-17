@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type Model struct {
@@ -22,7 +23,7 @@ type Model struct {
 	width     int
 
 	activeTools []activeTool
-	streamBuf   *strings.Builder // current streaming text from LLM
+	streamBuf   *strings.Builder
 
 	inputChan chan<- string
 }
@@ -33,10 +34,7 @@ type activeTool struct {
 	started time.Time
 }
 
-type userMsg struct{ text string }
-type responseMsg struct {
-	chunk string
-}
+type responseMsg struct{ chunk string }
 type toolStartMsg struct {
 	name string
 	id   string
@@ -63,8 +61,8 @@ func New(inputChan chan<- string) Model {
 
 	s := spinner.New()
 	s.Spinner = spinner.Spinner{
-		Frames: []string{"●", "●"},
-		FPS:    500,
+		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+		FPS:    80,
 	}
 
 	return Model{
@@ -87,14 +85,17 @@ func tickCmd() tea.Msg {
 	return tickMsg{}
 }
 
-// finalizeStream moves the stream buffer to output as rendered markdown.
+// finalizeStream flushes stream buffer to output as rendered markdown.
 func (m *Model) finalizeStream() {
 	text := m.streamBuf.String()
 	if text == "" {
 		return
 	}
-	rendered := RenderMarkdown(text)
-	m.output.WriteString(rendered)
+	// Render each line with the ⎿ prefix like Claude Code's MessageResponse
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for _, line := range lines {
+		m.output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render("  ⎿  ") + line + "\n")
+	}
 	m.streamBuf.Reset()
 }
 
@@ -110,7 +111,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC:
 			if m.waiting {
 				m.finalizeStream()
-				m.output.WriteString(m.theme.Dim.Render("\n(cancelled)\n\n"))
+				m.output.WriteString("\n")
 				m.waiting = false
 				return m, nil
 			}
@@ -122,7 +123,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if strings.TrimSpace(input) == "" {
 					return m, nil
 				}
-				m.output.WriteString(m.theme.Prompt.Render("> ") + input + "\n\n")
+				// User message: no prefix, just the text
+				m.output.WriteString(input + "\n\n")
 				m.textarea.Reset()
 				m.waiting = true
 				m.inputChan <- input
@@ -136,10 +138,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case userMsg:
-		m.output.WriteString(msg.text)
-		return m, nil
-
 	case responseMsg:
 		m.streamBuf.WriteString(msg.chunk)
 		return m, nil
@@ -149,10 +147,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeTools = append(m.activeTools, activeTool{
 			name: msg.name, id: msg.id, started: time.Now(),
 		})
-		m.output.WriteString(fmt.Sprintf(" %s %s\n",
-			m.theme.Brand.Render("●"),
-			m.theme.ToolName.Render(msg.name),
-		))
+		// Claude Code: ● ToolName — no extra formatting
+		m.output.WriteString(fmt.Sprintf("● %s\n", m.theme.ToolName.Render(msg.name)))
 		return m, tickCmd
 
 	case toolDoneMsg:
@@ -167,17 +163,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		durStr := formatDuration(duration)
 
 		if msg.err != nil {
-			m.output.WriteString(fmt.Sprintf(" %s %s (%s) %s\n",
-				m.theme.ToolError.Render("●"),
-				m.theme.ToolName.Render(msg.name),
+			m.output.WriteString(fmt.Sprintf("● %s (%s) %s\n",
+				m.theme.ToolError.Render(msg.name),
 				m.theme.ToolError.Render(truncate(msg.err.Error(), 60)),
 				m.theme.Dim.Render(durStr),
 			))
 		} else {
 			summary := truncate(strings.TrimSpace(msg.output), 80)
-			m.output.WriteString(fmt.Sprintf(" %s %s (%s) %s\n",
-				m.theme.ToolSuccess.Render("●"),
-				m.theme.ToolName.Render(msg.name),
+			m.output.WriteString(fmt.Sprintf("● %s (%s) %s\n",
+				m.theme.ToolSuccess.Render(msg.name),
 				m.theme.Dim.Render(summary),
 				m.theme.Dim.Render(durStr),
 			))
@@ -216,27 +210,32 @@ func (m Model) View() string {
 
 	var b strings.Builder
 
-	b.WriteString(m.renderStatus() + "\n")
+	// Status bar
+	b.WriteString(m.renderStatus() + "\n\n")
 
-	// Finished output (already markdown-rendered)
+	// Finished output
 	b.WriteString(m.output.String())
 
-	// Live streaming text — render through glamour for immediate formatting
+	// Live streaming text — render with ⎿ prefix
 	if m.streamBuf.Len() > 0 {
 		stream := m.streamBuf.String()
-		rendered := RenderMarkdown(stream)
-		b.WriteString(rendered)
+		lines := strings.Split(strings.TrimRight(stream, "\n"), "\n")
+		prefix := lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render("  ⎿  ")
+		for _, line := range lines {
+			b.WriteString(prefix + line + "\n")
+		}
 	}
 
-	// Separator
+	// Thin separator
 	sepWidth := min(m.width-1, 79)
 	if sepWidth < 10 {
 		sepWidth = 40
 	}
 	b.WriteString(m.theme.Subtle.Render(strings.Repeat("─", sepWidth)) + "\n")
 
+	// Input
 	if m.waiting {
-		b.WriteString(m.theme.Dim.Render("  ⋮ "))
+		b.WriteString(m.theme.Brand.Render("  " + m.spinner.View()))
 	} else {
 		b.WriteString(m.theme.Prompt.Render("> "))
 		b.WriteString(m.textarea.View())
