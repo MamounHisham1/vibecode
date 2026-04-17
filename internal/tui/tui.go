@@ -21,8 +21,8 @@ type Model struct {
 	waiting   bool
 	width     int
 
-	// Track active tools for inline spinner updates
 	activeTools []activeTool
+	textBuf     *strings.Builder
 
 	inputChan chan<- string
 }
@@ -61,8 +61,8 @@ func New(inputChan chan<- string) Model {
 
 	s := spinner.New()
 	s.Spinner = spinner.Spinner{
-		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
-		FPS:    100,
+		Frames: []string{"●", "●"}, // Claude Code uses blinking ●
+		FPS:    500,
 	}
 
 	return Model{
@@ -70,18 +70,29 @@ func New(inputChan chan<- string) Model {
 		textarea:   ta,
 		spinner:    s,
 		output:     &strings.Builder{},
+		textBuf:    &strings.Builder{},
 		inputChan:  inputChan,
 		width:      80,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, textarea.Blink, tickCmd)
+	return tea.Batch(textarea.Blink, tickCmd)
 }
 
 func tickCmd() tea.Msg {
 	time.Sleep(100 * time.Millisecond)
 	return tickMsg{}
+}
+
+func (m *Model) flushTextBuf() {
+	text := m.textBuf.String()
+	if text == "" {
+		return
+	}
+	rendered := RenderMarkdown(text)
+	m.output.WriteString(rendered + "\n")
+	m.textBuf.Reset()
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -95,7 +106,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			if m.waiting {
-				m.output.WriteString(m.theme.Warning.Render("  (cancelled)\n\n"))
+				m.flushTextBuf()
+				m.output.WriteString(m.theme.Dim.Render("(cancelled)\n\n"))
 				m.waiting = false
 				return m, nil
 			}
@@ -107,7 +119,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if strings.TrimSpace(input) == "" {
 					return m, nil
 				}
-				m.output.WriteString(m.theme.UserLabel.Render("> ") + input + "\n\n")
+				m.output.WriteString(m.theme.Prompt.Render("> ") + input + "\n\n")
 				m.textarea.Reset()
 				m.waiting = true
 				m.inputChan <- input
@@ -126,14 +138,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case toolStartMsg:
+		m.flushTextBuf()
 		m.activeTools = append(m.activeTools, activeTool{
 			name: msg.name, id: msg.id, started: time.Now(),
 		})
-		m.output.WriteString(fmt.Sprintf("  %s %s\n", m.spinner.View(), m.theme.ToolName.Render(msg.name)))
-		return m, m.spinner.Tick
+		// Claude Code style: ● ToolName
+		m.output.WriteString(fmt.Sprintf(" %s %s\n",
+			m.theme.Brand.Render("●"),
+			m.theme.ToolName.Render(msg.name),
+		))
+		return m, tickCmd
 
 	case toolDoneMsg:
-		// Remove from active tools
 		for i, t := range m.activeTools {
 			if t.id == msg.id {
 				m.activeTools = append(m.activeTools[:i], m.activeTools[i+1:]...)
@@ -144,17 +160,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		duration := time.Since(msg.started).Round(time.Millisecond)
 		durStr := formatDuration(duration)
 
+		// Claude Code style: ● ToolName (result) duration
 		if msg.err != nil {
-			m.output.WriteString(fmt.Sprintf("  %s %s %s (%s)\n",
-				m.theme.Error.Render("✗"),
+			m.output.WriteString(fmt.Sprintf(" %s %s (%s) %s\n",
+				m.theme.ToolError.Render("●"),
 				m.theme.ToolName.Render(msg.name),
-				m.theme.Error.Render(truncate(msg.err.Error(), 80)),
+				m.theme.ToolError.Render(truncate(msg.err.Error(), 60)),
 				m.theme.Dim.Render(durStr),
 			))
 		} else {
-			summary := truncate(strings.TrimSpace(msg.output), 100)
-			m.output.WriteString(fmt.Sprintf("  %s %s %s (%s)\n",
-				m.theme.Success.Render("✓"),
+			summary := truncate(strings.TrimSpace(msg.output), 80)
+			m.output.WriteString(fmt.Sprintf(" %s %s (%s) %s\n",
+				m.theme.ToolSuccess.Render("●"),
 				m.theme.ToolName.Render(msg.name),
 				m.theme.Dim.Render(summary),
 				m.theme.Dim.Render(durStr),
@@ -163,17 +180,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case responseMsg:
-		m.output.WriteString(msg.text)
+		m.textBuf.WriteString(msg.text)
 		return m, nil
 
 	case doneMsg:
+		m.flushTextBuf()
 		m.output.WriteString("\n")
 		m.waiting = false
 		m.activeTools = nil
 		return m, nil
 
 	case errMsg:
-		m.output.WriteString(m.theme.Error.Render(fmt.Sprintf("\n  Error: %s\n\n", msg.err)))
+		m.flushTextBuf()
+		m.output.WriteString(m.theme.Error.Render(fmt.Sprintf("Error: %s\n\n", msg.err)))
 		m.waiting = false
 		m.activeTools = nil
 		return m, nil
@@ -196,15 +215,25 @@ func (m Model) View() string {
 
 	var b strings.Builder
 
-	// Status bar
+	// Claude Code style: status line with brand name
 	b.WriteString(m.renderStatus() + "\n")
 
 	// Output area
 	b.WriteString(m.output.String())
 
-	// Separator + input
-	b.WriteString(m.theme.Separator.Render("─"+strings.Repeat("─", min(m.width-1, 79))) + "\n")
+	// Live text buffer
+	if m.textBuf.Len() > 0 {
+		b.WriteString(m.textBuf.String())
+	}
 
+	// Separator — thin, subtle
+	sepWidth := min(m.width-1, 79)
+	if sepWidth < 10 {
+		sepWidth = 40
+	}
+	b.WriteString(m.theme.Subtle.Render(strings.Repeat("─", sepWidth)) + "\n")
+
+	// Input
 	if m.waiting {
 		b.WriteString(m.theme.Dim.Render("  ⋮ "))
 	} else {
@@ -216,20 +245,17 @@ func (m Model) View() string {
 }
 
 func (m Model) renderStatus() string {
-	parts := []string{m.theme.Bold.Render("vibe code")}
-
-	if m.status != "" {
-		parts = append(parts, m.theme.Dim.Render("·"), m.theme.Dim.Render(m.status))
-	}
-
-	return " " + strings.Join(parts, " ")
+	return fmt.Sprintf(" %s %s",
+		m.theme.Brand.Bold(true).Render("vibe code"),
+		m.theme.Dim.Render(m.status),
+	)
 }
 
 func (m *Model) SetStatus(model, dir string) {
-	m.status = fmt.Sprintf("%s · %s", model, shortenPath(dir))
+	m.status = fmt.Sprintf("· %s · %s", model, shortenPath(dir))
 }
 
-// Callback implementation for the agent loop.
+// Callback for the agent loop.
 type TUICallback struct {
 	program    *tea.Program
 	startTimes map[string]time.Time
@@ -265,8 +291,6 @@ func (c *TUICallback) OnError(err error) {
 	c.program.Send(errMsg{err: err})
 }
 
-// Helpers
-
 func formatDuration(d time.Duration) string {
 	if d < time.Second {
 		return fmt.Sprintf("%dms", d.Milliseconds())
@@ -275,7 +299,6 @@ func formatDuration(d time.Duration) string {
 }
 
 func truncate(s string, max int) string {
-	// Replace newlines for single-line display
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.TrimSpace(s)
 	if len(s) <= max {
@@ -285,11 +308,11 @@ func truncate(s string, max int) string {
 }
 
 func shortenPath(p string) string {
-	home := ""
-	if h, err := homeDir(); err == nil {
-		home = h
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
 	}
-	if home != "" && strings.HasPrefix(p, home) {
+	if strings.HasPrefix(p, home) {
 		return "~" + p[len(home):]
 	}
 	return p
@@ -300,8 +323,4 @@ func min(a, b int) int {
 		return a
 	}
 	return b
-}
-
-func homeDir() (string, error) {
-	return os.UserHomeDir()
 }

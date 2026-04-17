@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,6 +18,11 @@ import (
 	"github.com/vibecode/vibecode/internal/tool"
 	"github.com/vibecode/vibecode/internal/tui"
 )
+
+// renderMarkdownCLI wraps the tui markdown renderer for CLI one-shot use.
+func renderMarkdownCLI(text string) string {
+	return tui.RenderMarkdown(text)
+}
 
 var (
 	flagProvider string
@@ -157,10 +163,19 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 }
 
 // cliCallback is a simple callback for one-shot mode that prints to stdout.
-type cliCallback struct{}
+type cliCallback struct {
+	buf strings.Builder
+}
 
-func (c *cliCallback) OnText(text string)               { fmt.Print(text) }
-func (c *cliCallback) OnToolStart(name, id string)       { fmt.Printf("\n◐ %s...\n", name) }
+func (c *cliCallback) OnText(text string) { c.buf.WriteString(text) }
+func (c *cliCallback) OnToolStart(name, id string) {
+	// Flush buffered text as markdown before tool output
+	if c.buf.Len() > 0 {
+		fmt.Print(renderMarkdownCLI(c.buf.String()))
+		c.buf.Reset()
+	}
+	fmt.Printf("\n◐ %s...\n", name)
+}
 func (c *cliCallback) OnToolOutput(name, id, output string, err error) {
 	icon := "✓"
 	if err != nil {
@@ -172,5 +187,17 @@ func (c *cliCallback) OnToolOutput(name, id, output string, err error) {
 	}
 	fmt.Printf("%s %s: %s\n", icon, name, summary)
 }
-func (c *cliCallback) OnDone()    { fmt.Println() }
-func (c *cliCallback) OnError(err error) { fmt.Fprintf(os.Stderr, "Error: %s\n", err) }
+func (c *cliCallback) OnDone() {
+	if c.buf.Len() > 0 {
+		fmt.Print(renderMarkdownCLI(c.buf.String()))
+		c.buf.Reset()
+	}
+	fmt.Println()
+}
+func (c *cliCallback) OnError(err error) {
+	if c.buf.Len() > 0 {
+		fmt.Print(renderMarkdownCLI(c.buf.String()))
+		c.buf.Reset()
+	}
+	fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+}
