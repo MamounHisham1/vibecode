@@ -22,7 +22,7 @@ type Model struct {
 	width     int
 
 	activeTools []activeTool
-	textBuf     *strings.Builder
+	streamBuf   *strings.Builder // current streaming text from LLM
 
 	inputChan chan<- string
 }
@@ -34,7 +34,9 @@ type activeTool struct {
 }
 
 type userMsg struct{ text string }
-type responseMsg struct{ text string }
+type responseMsg struct {
+	chunk string
+}
 type toolStartMsg struct {
 	name string
 	id   string
@@ -61,7 +63,7 @@ func New(inputChan chan<- string) Model {
 
 	s := spinner.New()
 	s.Spinner = spinner.Spinner{
-		Frames: []string{"●", "●"}, // Claude Code uses blinking ●
+		Frames: []string{"●", "●"},
 		FPS:    500,
 	}
 
@@ -70,7 +72,7 @@ func New(inputChan chan<- string) Model {
 		textarea:   ta,
 		spinner:    s,
 		output:     &strings.Builder{},
-		textBuf:    &strings.Builder{},
+		streamBuf:  &strings.Builder{},
 		inputChan:  inputChan,
 		width:      80,
 	}
@@ -85,14 +87,15 @@ func tickCmd() tea.Msg {
 	return tickMsg{}
 }
 
-func (m *Model) flushTextBuf() {
-	text := m.textBuf.String()
+// finalizeStream moves the stream buffer to output as rendered markdown.
+func (m *Model) finalizeStream() {
+	text := m.streamBuf.String()
 	if text == "" {
 		return
 	}
 	rendered := RenderMarkdown(text)
-	m.output.WriteString(rendered + "\n")
-	m.textBuf.Reset()
+	m.output.WriteString(rendered)
+	m.streamBuf.Reset()
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -106,8 +109,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			if m.waiting {
-				m.flushTextBuf()
-				m.output.WriteString(m.theme.Dim.Render("(cancelled)\n\n"))
+				m.finalizeStream()
+				m.output.WriteString(m.theme.Dim.Render("\n(cancelled)\n\n"))
 				m.waiting = false
 				return m, nil
 			}
@@ -137,12 +140,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.output.WriteString(msg.text)
 		return m, nil
 
+	case responseMsg:
+		m.streamBuf.WriteString(msg.chunk)
+		return m, nil
+
 	case toolStartMsg:
-		m.flushTextBuf()
+		m.finalizeStream()
 		m.activeTools = append(m.activeTools, activeTool{
 			name: msg.name, id: msg.id, started: time.Now(),
 		})
-		// Claude Code style: ● ToolName
 		m.output.WriteString(fmt.Sprintf(" %s %s\n",
 			m.theme.Brand.Render("●"),
 			m.theme.ToolName.Render(msg.name),
@@ -160,7 +166,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		duration := time.Since(msg.started).Round(time.Millisecond)
 		durStr := formatDuration(duration)
 
-		// Claude Code style: ● ToolName (result) duration
 		if msg.err != nil {
 			m.output.WriteString(fmt.Sprintf(" %s %s (%s) %s\n",
 				m.theme.ToolError.Render("●"),
@@ -179,19 +184,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case responseMsg:
-		m.textBuf.WriteString(msg.text)
-		return m, nil
-
 	case doneMsg:
-		m.flushTextBuf()
+		m.finalizeStream()
 		m.output.WriteString("\n")
 		m.waiting = false
 		m.activeTools = nil
 		return m, nil
 
 	case errMsg:
-		m.flushTextBuf()
+		m.finalizeStream()
 		m.output.WriteString(m.theme.Error.Render(fmt.Sprintf("Error: %s\n\n", msg.err)))
 		m.waiting = false
 		m.activeTools = nil
@@ -215,25 +216,25 @@ func (m Model) View() string {
 
 	var b strings.Builder
 
-	// Claude Code style: status line with brand name
 	b.WriteString(m.renderStatus() + "\n")
 
-	// Output area
+	// Finished output (already markdown-rendered)
 	b.WriteString(m.output.String())
 
-	// Live text buffer
-	if m.textBuf.Len() > 0 {
-		b.WriteString(m.textBuf.String())
+	// Live streaming text — render through glamour for immediate formatting
+	if m.streamBuf.Len() > 0 {
+		stream := m.streamBuf.String()
+		rendered := RenderMarkdown(stream)
+		b.WriteString(rendered)
 	}
 
-	// Separator — thin, subtle
+	// Separator
 	sepWidth := min(m.width-1, 79)
 	if sepWidth < 10 {
 		sepWidth = 40
 	}
 	b.WriteString(m.theme.Subtle.Render(strings.Repeat("─", sepWidth)) + "\n")
 
-	// Input
 	if m.waiting {
 		b.WriteString(m.theme.Dim.Render("  ⋮ "))
 	} else {
@@ -266,7 +267,7 @@ func NewCallback(p *tea.Program) *TUICallback {
 }
 
 func (c *TUICallback) OnText(text string) {
-	c.program.Send(responseMsg{text: text})
+	c.program.Send(responseMsg{chunk: text})
 }
 
 func (c *TUICallback) OnToolStart(name, id string) {
