@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,6 @@ import (
 	"github.com/vibecode/vibecode/internal/tui"
 )
 
-// renderMarkdownCLI wraps the tui markdown renderer for CLI one-shot use.
 func renderMarkdownCLI(text string) string {
 	return tui.RenderMarkdown(text)
 }
@@ -38,7 +38,7 @@ func main() {
 		RunE:  run,
 	}
 
-	rootCmd.Flags().StringVar(&flagProvider, "provider", "", "LLM provider (anthropic, openai, ollama)")
+	rootCmd.Flags().StringVar(&flagProvider, "provider", "", "LLM provider (anthropic, openai, ollama, zhipu)")
 	rootCmd.Flags().StringVar(&flagModel, "model", "", "Model name to use")
 
 	if err := rootCmd.Execute(); err != nil {
@@ -52,7 +52,6 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// CLI flag overrides
 	if flagProvider != "" {
 		cfg.Provider = flagProvider
 	}
@@ -60,10 +59,25 @@ func run(cmd *cobra.Command, args []string) error {
 		cfg.Model = flagModel
 	}
 
-	// Detect project root
 	dir, _ := os.Getwd()
 
-	// Build tool registry
+	reg := buildToolRegistry()
+
+	p, err := buildProvider(cfg)
+	if err != nil {
+		return err
+	}
+
+	system := buildSystemPrompt(dir)
+
+	if len(args) == 1 {
+		return runOneShot(args[0], p, reg, system, cfg)
+	}
+
+	return runInteractive(p, reg, system, cfg, dir)
+}
+
+func buildToolRegistry() *tool.Registry {
 	reg := tool.NewRegistry()
 	reg.Register(tool.ReadFile{})
 	reg.Register(tool.WriteFile{})
@@ -72,23 +86,9 @@ func run(cmd *cobra.Command, args []string) error {
 	reg.Register(tool.Grep{})
 	reg.Register(tool.Shell{})
 	reg.Register(tool.Git{})
-
-	// Build provider
-	p, err := buildProvider(cfg)
-	if err != nil {
-		return err
-	}
-
-	// System prompt
-	system := buildSystemPrompt(dir)
-
-	// One-shot mode
-	if len(args) == 1 {
-		return runOneShot(cmd, args[0], p, reg, system, cfg)
-	}
-
-	// Interactive mode
-	return runInteractive(p, reg, system, cfg, dir)
+	reg.Register(tool.WebFetch{})
+	reg.Register(tool.AskUser{})
+	return reg
 }
 
 func buildProvider(cfg *config.Config) (provider.Provider, error) {
@@ -106,26 +106,160 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 			return provider.NewAnthropicWithBaseURL(key, model, cfg.BaseURL), nil
 		}
 		return provider.NewAnthropic(key, model), nil
+
+	case "openai":
+		key := cfg.APIKey("openai")
+		if key == "" {
+			return nil, fmt.Errorf("set OPENAI_API_KEY or add api_keys.openai to ~/.vibecode/config.json")
+		}
+		model := cfg.Model
+		if model == "" {
+			model = "gpt-4.1"
+		}
+		if cfg.BaseURL != "" {
+			return provider.NewOpenAIWithBaseURL(key, model, cfg.BaseURL), nil
+		}
+		return provider.NewOpenAI(key, model), nil
+
+	case "ollama":
+		model := cfg.Model
+		if model == "" {
+			model = "llama3"
+		}
+		baseURL := cfg.APIKey("ollama_base_url")
+		return provider.NewOllama(model, baseURL), nil
+
 	default:
-		return nil, fmt.Errorf("unsupported provider: %s (only 'anthropic' is implemented in MVP)", cfg.Provider)
+		return nil, fmt.Errorf("unsupported provider: %s (supported: anthropic, openai, ollama, zhipu)", cfg.Provider)
 	}
 }
 
 func buildSystemPrompt(dir string) string {
-	return fmt.Sprintf(`You are Vibe Code, an AI coding agent. You help users write, edit, and understand code.
+	var b strings.Builder
 
-Working directory: %s
+	b.WriteString(fmt.Sprintf("You are Vibe Code, an AI coding agent. You help users write, edit, and understand code.\n\n"))
+	b.WriteString(fmt.Sprintf("Working directory: %s\n\n", dir))
 
-You have tools to read, write, and edit files; search code; run shell commands; and interact with git. Use them to accomplish the user's tasks.
+	// Git context (like Claude Code)
+	if gitInfo := getGitContext(dir); gitInfo != "" {
+		b.WriteString(gitInfo)
+		b.WriteString("\n")
+	}
+
+	// Load VIBECODE.md if present
+	if instructions := loadVibeCodeMD(dir); instructions != "" {
+		b.WriteString("\nProject instructions:\n")
+		b.WriteString(instructions)
+		b.WriteString("\n")
+	}
+
+	// Today's date
+	b.WriteString(fmt.Sprintf("\nToday's date: %s\n", getDateString()))
+
+	b.WriteString(`
+Tools: read_file, write_file, edit_file, glob, grep, shell, git, web_fetch, ask_user
 
 Rules:
 - Always read files before editing them
 - Use edit_file for targeted changes, write_file for new files
 - Keep explanations concise
-- Run tests after making changes when appropriate`, filepath.Base(dir))
+- Run tests after making changes when appropriate
+- Use ask_user when you need clarification
+`)
+
+	return b.String()
 }
 
-func runOneShot(cmd *cobra.Command, message string, p provider.Provider, reg *tool.Registry, system string, cfg *config.Config) error {
+func getGitContext(dir string) string {
+	var b strings.Builder
+
+	// Branch
+	if out, err := exec.Command("git", "-C", dir, "branch", "--show-current").Output(); err == nil {
+		branch := strings.TrimSpace(string(out))
+		if branch != "" {
+			b.WriteString(fmt.Sprintf("Git branch: %s\n", branch))
+		}
+	}
+
+	// Status (truncated)
+	if out, err := exec.Command("git", "-C", dir, "status", "--short").Output(); err == nil {
+		status := strings.TrimSpace(string(out))
+		if status != "" {
+			if len(status) > 2000 {
+				status = status[:2000] + "\n... (truncated)"
+			}
+			b.WriteString("Git status:\n" + status + "\n")
+		}
+	}
+
+	// Recent commits
+	if out, err := exec.Command("git", "-C", dir, "log", "--oneline", "-n", "5").Output(); err == nil {
+		log := strings.TrimSpace(string(out))
+		if log != "" {
+			b.WriteString("Recent commits:\n" + log + "\n")
+		}
+	}
+
+	return b.String()
+}
+
+func loadVibeCodeMD(dir string) string {
+	// Walk from dir up to home, collecting VIBECODE.md files (like Claude Code's CLAUDE.md)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	var files []string
+
+	// User-level: ~/.vibecode/VIBECODE.md
+	globalPath := filepath.Join(home, ".vibecode", "VIBECODE.md")
+	if data, err := os.ReadFile(globalPath); err == nil {
+		files = append(files, string(data))
+	}
+
+	// Project-level: walk from dir up to home
+	cur := dir
+	for {
+		p := filepath.Join(cur, "VIBECODE.md")
+		if data, err := os.ReadFile(p); err == nil {
+			files = append(files, string(data))
+		}
+		p = filepath.Join(cur, ".vibecode", "VIBECODE.md")
+		if data, err := os.ReadFile(p); err == nil {
+			files = append(files, string(data))
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur || parent == home || parent == "/" {
+			break
+		}
+		cur = parent
+	}
+
+	// Also .vibecode/rules/*.md
+	rulesDir := filepath.Join(dir, ".vibecode", "rules")
+	if entries, err := os.ReadDir(rulesDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
+				if data, err := os.ReadFile(filepath.Join(rulesDir, entry.Name())); err == nil {
+					files = append(files, string(data))
+				}
+			}
+		}
+	}
+
+	return strings.Join(files, "\n\n")
+}
+
+func getDateString() string {
+	out, err := exec.Command("date", "+%Y-%m-%d").Output()
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func runOneShot(message string, p provider.Provider, reg *tool.Registry, system string, cfg *config.Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -148,7 +282,6 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 	cb := tui.NewCallback(pgm)
 	a := agent.New(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb)
 
-	// Agent loop goroutine
 	go func() {
 		for msg := range inputChan {
 			if err := a.Run(ctx, msg); err != nil {
@@ -162,22 +295,20 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 	return err
 }
 
-// cliCallback is a simple callback for one-shot mode that prints to stdout.
 type cliCallback struct {
 	buf strings.Builder
 }
 
 func (c *cliCallback) OnText(text string) { c.buf.WriteString(text) }
 func (c *cliCallback) OnToolStart(name, id string) {
-	// Flush buffered text as markdown before tool output
 	if c.buf.Len() > 0 {
 		fmt.Print(renderMarkdownCLI(c.buf.String()))
 		c.buf.Reset()
 	}
-	fmt.Printf("\n◐ %s...\n", name)
+	fmt.Printf("\n● %s...\n", name)
 }
 func (c *cliCallback) OnToolOutput(name, id, output string, err error) {
-	icon := "✓"
+	icon := "●"
 	if err != nil {
 		icon = "✗"
 	}
