@@ -301,7 +301,7 @@ vibecode config set provider ollama
 
 **Precedence:** env vars > CLI flags > config file > defaults
 
-**Env vars:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OLLAMA_BASE_URL`, `HARNESS_PROVIDER` (legacy compat)
+**Env vars:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OLLAMA_BASE_URL`, `VIBECODE_PROVIDER`
 
 ## Key Dependencies
 
@@ -315,6 +315,6 @@ vibecode config set provider ollama
 
 ## Distribution
 
-- `go install github.com/user/vibecode/cmd/vibecode@latest`
+- `go install github.com/vibecode/vibecode/cmd/vibecode@latest` (repo path TBD)
 - Single binary, zero runtime deps except `git`
 - Makefile targets: `build`, `install`, `test`
