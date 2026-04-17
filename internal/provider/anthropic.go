@@ -7,35 +7,49 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 )
 
-const anthropicBaseURL = "https://api.anthropic.com/v1/messages"
-
-// AnthropicProvider implements Provider for the Anthropic API.
+// AnthropicProvider implements Provider for the Anthropic API (and compatible proxies).
 type AnthropicProvider struct {
-	apiKey string
-	model  string
-	client *http.Client
+	apiKey  string
+	model   string
+	baseURL string
+	client  *http.Client
+	debug   bool
 }
 
 func NewAnthropic(apiKey, model string) *AnthropicProvider {
 	return &AnthropicProvider{
-		apiKey: apiKey,
-		model:  model,
-		client: &http.Client{},
+		apiKey:  apiKey,
+		model:   model,
+		baseURL: "https://api.anthropic.com/v1/messages",
+		client:  &http.Client{},
+		debug:   os.Getenv("VIBECODE_DEBUG") != "",
+	}
+}
+
+func NewAnthropicWithBaseURL(apiKey, model, baseURL string) *AnthropicProvider {
+	return &AnthropicProvider{
+		apiKey:  apiKey,
+		model:   model,
+		baseURL: baseURL,
+		client:  &http.Client{},
+		debug:   os.Getenv("VIBECODE_DEBUG") != "",
 	}
 }
 
 // anthropicRequest is the JSON body sent to the Anthropic API.
 type anthropicRequest struct {
-	Model     string              `json:"model"`
-	MaxTokens int                 `json:"max_tokens"`
-	System    []anthropicContent  `json:"system,omitempty"`
-	Messages  []anthropicMessage  `json:"messages"`
-	Tools     []anthropicTool     `json:"tools,omitempty"`
-	Stream    bool                `json:"stream"`
+	Model     string             `json:"model"`
+	MaxTokens int                `json:"max_tokens"`
+	System    []anthropicContent `json:"system,omitempty"`
+	Messages  []anthropicMessage `json:"messages"`
+	Tools     []anthropicTool    `json:"tools,omitempty"`
+	Stream    bool               `json:"stream"`
 }
 
 type anthropicMessage struct {
@@ -67,11 +81,20 @@ type anthropicSSE struct {
 	Index int             `json:"index,omitempty"`
 	Delta json.RawMessage `json:"delta,omitempty"`
 
+	// For content_block_start
+	ContentBlock struct {
+		Type  string          `json:"type"`
+		ID    string          `json:"id,omitempty"`
+		Name  string          `json:"name,omitempty"`
+		Input json.RawMessage `json:"input,omitempty"`
+		Text  string          `json:"text,omitempty"`
+	} `json:"content_block,omitempty"`
+
 	// For message_start
 	Message struct {
-		ID      string `json:"id"`
-		Model   string `json:"model"`
-		Usage   struct {
+		ID    string `json:"id"`
+		Model string `json:"model"`
+		Usage struct {
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
@@ -79,12 +102,10 @@ type anthropicSSE struct {
 }
 
 type anthropicDelta struct {
-	Type             string          `json:"type"`
-	Text             string          `json:"text,omitempty"`
-	PartialJSON      string          `json:"partial_json,omitempty"`
-	ToolCallID       string          `json:"id,omitempty"`
-	ToolName         string          `json:"name,omitempty"`
-	StopReason       string          `json:"stop_reason,omitempty"`
+	Type        string `json:"type"`
+	Text        string `json:"text,omitempty"`
+	PartialJSON string `json:"partial_json,omitempty"`
+	StopReason  string `json:"stop_reason,omitempty"`
 }
 
 func (a *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Event, error) {
@@ -93,7 +114,11 @@ func (a *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicBaseURL, bytes.NewReader(body))
+	if a.debug {
+		log.Printf("REQUEST to %s:\n%s\n", a.baseURL, string(body))
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -118,7 +143,6 @@ func (a *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 	go func() {
 		defer close(ch)
 		defer resp.Body.Close()
-
 		a.streamSSE(resp.Body, ch)
 	}()
 
@@ -195,6 +219,10 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 			return
 		}
 
+		if a.debug {
+			log.Printf("SSE: %s\n", data)
+		}
+
 		var sse anthropicSSE
 		if err := json.Unmarshal([]byte(data), &sse); err != nil {
 			ch <- ErrorEvent{Err: fmt.Errorf("parse SSE: %w", err)}
@@ -203,12 +231,22 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 
 		switch sse.Type {
 		case "content_block_start":
-			var delta anthropicDelta
-			if err := json.Unmarshal(sse.Delta, &delta); err == nil {
-				if delta.Type == "tool_use" {
-					ch <- ToolCallEvent{
-						ID:   delta.ToolCallID,
-						Name: delta.ToolName,
+			// Check if the content block itself has tool_use info
+			if sse.ContentBlock.Type == "tool_use" {
+				ch <- ToolCallEvent{
+					ID:   sse.ContentBlock.ID,
+					Name: sse.ContentBlock.Name,
+				}
+			}
+			// Also check delta for backward compat
+			if sse.Delta != nil {
+				var delta anthropicDelta
+				if err := json.Unmarshal(sse.Delta, &delta); err == nil {
+					if delta.Type == "tool_use" {
+						ch <- ToolCallEvent{
+							ID:   sse.ContentBlock.ID,
+							Name: sse.ContentBlock.Name,
+						}
 					}
 				}
 			}
@@ -220,7 +258,6 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 				case "text_delta":
 					ch <- TextEvent{Text: delta.Text}
 				case "input_json_delta":
-					// Accumulated tool input — we'll collect in the agent loop
 					ch <- TextEvent{Text: delta.PartialJSON}
 				}
 			}
@@ -228,9 +265,14 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 		case "content_block_stop":
 			// Block complete
 
-		case "message_stop":
-			ch <- DoneEvent{}
-			return
+		case "message_start", "message_delta", "message_stop":
+			if sse.Type == "message_stop" {
+				ch <- DoneEvent{}
+				return
+			}
+
+		case "ping":
+			// Keep alive, ignore
 
 		case "error":
 			ch <- ErrorEvent{Err: fmt.Errorf("stream error: %s", data)}

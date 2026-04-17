@@ -22,14 +22,15 @@ type Callback interface {
 }
 
 type Agent struct {
-	provider   provider.Provider
-	registry   *tool.Registry
-	system     string
-	maxIter    int
-	history    []provider.Message
+	provider    provider.Provider
+	registry    *tool.Registry
+	system      string
+	maxIter     int
+	history     []provider.Message
 	autoApprove map[string]bool
-	cb         Callback
-	mu         sync.Mutex
+	cb          Callback
+	mu          sync.Mutex
+	callCounter int
 }
 
 func New(p provider.Provider, reg *tool.Registry, system string, maxIter int, autoApprove []string, cb Callback) *Agent {
@@ -48,13 +49,17 @@ func New(p provider.Provider, reg *tool.Registry, system string, maxIter int, au
 	}
 }
 
+func (a *Agent) nextCallID() string {
+	a.callCounter++
+	return fmt.Sprintf("call_%d", a.callCounter)
+}
+
 // Run processes a user message through the agent loop.
 func (a *Agent) Run(ctx context.Context, userMsg string) error {
 	a.mu.Lock()
 	a.history = append(a.history, provider.UserMessage(userMsg))
 	a.mu.Unlock()
 
-	// Collect tool definitions
 	toolDefs := a.buildToolDefs()
 
 	for i := 0; i < a.maxIter; i++ {
@@ -70,18 +75,13 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 			return err
 		}
 
-		// Collect the full response from the stream
 		var textBuf strings.Builder
 		var toolCalls []provider.ToolCallEvent
-		var toolInputBufs map[string]string // id -> accumulated JSON
-		if toolInputBufs == nil {
-			toolInputBufs = make(map[string]string)
-		}
+		toolInputBufs := make(map[string]string)
 
 		for ev := range events {
 			switch e := ev.(type) {
 			case provider.TextEvent:
-				// If we're accumulating tool input, append there
 				if len(toolCalls) > 0 {
 					lastID := toolCalls[len(toolCalls)-1].ID
 					toolInputBufs[lastID] += e.Text
@@ -91,13 +91,19 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 				a.cb.OnText(e.Text)
 
 			case provider.ToolCallEvent:
-				if e.ID != "" && e.Name != "" {
-					// New tool call start
-					toolCalls = append(toolCalls, e)
-					toolInputBufs[e.ID] = ""
-				} else if e.Input != nil {
-					// Full input in one event
-					toolCalls = append(toolCalls, e)
+				if e.Name != "" {
+					id := e.ID
+					if id == "" {
+						id = a.nextCallID()
+					}
+					toolCalls = append(toolCalls, provider.ToolCallEvent{
+						ID:    id,
+						Name:  e.Name,
+						Input: e.Input,
+					})
+					if e.Input == nil {
+						toolInputBufs[id] = ""
+					}
 				}
 
 			case provider.DoneEvent:
@@ -109,93 +115,215 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 			}
 		}
 
-		// If there's text, append assistant message
-		if textBuf.Len() > 0 && len(toolCalls) == 0 {
+		fullText := textBuf.String()
+
+		// If no protocol-level tool calls, check for inline JSON tool calls in text
+		if len(toolCalls) == 0 && fullText != "" {
+			inlineCalls := a.parseInlineToolCalls(fullText)
+			if len(inlineCalls) > 0 {
+				toolCalls = inlineCalls
+				// Strip the JSON from displayed text
+				cleanText := a.stripInlineJSON(fullText)
+				if strings.TrimSpace(cleanText) != "" {
+					a.cb.OnText("") // just to keep flow
+				}
+			}
+		}
+
+		// Pure text response, no tool calls
+		if len(toolCalls) == 0 {
 			a.mu.Lock()
-			a.history = append(a.history, provider.AssistantTextMessage(textBuf.String()))
+			a.history = append(a.history, provider.AssistantTextMessage(fullText))
 			a.mu.Unlock()
 			a.cb.OnDone()
 			return nil
 		}
 
-		// If there are tool calls, execute them
-		if len(toolCalls) > 0 {
-			// Append any remaining text first
-			if textBuf.Len() > 0 {
-				a.cb.OnText(textBuf.String())
-			}
+		// Execute tool calls
+		finalCalls := a.resolveToolInputs(toolCalls, toolInputBufs)
 
-			// Build assistant message with tool calls
-			// Use the accumulated input buffers
-			finalCalls := make([]provider.ToolCallEvent, len(toolCalls))
-			for i, tc := range toolCalls {
-				input := tc.Input
-				if input == nil && toolInputBufs[tc.ID] != "" {
-					input = json.RawMessage(toolInputBufs[tc.ID])
+		a.mu.Lock()
+		a.history = append(a.history, provider.AssistantToolCallsMessage(finalCalls))
+		a.mu.Unlock()
+
+		var wg sync.WaitGroup
+		var histMu sync.Mutex
+		var toolResults []provider.Message
+
+		for _, tc := range finalCalls {
+			wg.Add(1)
+			go func(call provider.ToolCallEvent) {
+				defer wg.Done()
+
+				a.cb.OnToolStart(call.Name, call.ID)
+
+				result, err := a.registry.Execute(ctx, call.Name, call.Input)
+
+				var output string
+				var isError bool
+				if err != nil {
+					output = err.Error()
+					isError = true
+				} else {
+					output = string(result)
 				}
-				if input == nil {
-					input = json.RawMessage("{}")
-				}
-				finalCalls[i] = provider.ToolCallEvent{
-					ID:    tc.ID,
-					Name:  tc.Name,
-					Input: input,
-				}
-			}
 
-			a.mu.Lock()
-			a.history = append(a.history, provider.AssistantToolCallsMessage(finalCalls))
-			a.mu.Unlock()
+				a.cb.OnToolOutput(call.Name, call.ID, output, err)
 
-			// Execute tool calls (parallel)
-			var wg sync.WaitGroup
-			var histMu sync.Mutex
-			var toolResults []provider.Message
-
-			for _, tc := range finalCalls {
-				wg.Add(1)
-				go func(call provider.ToolCallEvent) {
-					defer wg.Done()
-
-					a.cb.OnToolStart(call.Name, call.ID)
-
-					result, err := a.registry.Execute(ctx, call.Name, call.Input)
-
-					var output string
-					var isError bool
-					if err != nil {
-						output = err.Error()
-						isError = true
-					} else {
-						output = string(result)
-					}
-
-					a.cb.OnToolOutput(call.Name, call.ID, output, err)
-
-					histMu.Lock()
-					toolResults = append(toolResults, provider.ToolResultMessage(
-						call.ID, json.RawMessage(output), isError,
-					))
-					histMu.Unlock()
-				}(tc)
-			}
-			wg.Wait()
-
-			a.mu.Lock()
-			a.history = append(a.history, toolResults...)
-			a.mu.Unlock()
-
-			// Continue loop — the LLM will see the tool results
-			continue
+				histMu.Lock()
+				toolResults = append(toolResults, provider.ToolResultMessage(
+					call.ID, json.RawMessage(output), isError,
+				))
+				histMu.Unlock()
+			}(tc)
 		}
+		wg.Wait()
 
-		// Empty response with no tool calls — we're done
-		a.cb.OnDone()
-		return nil
+		a.mu.Lock()
+		a.history = append(a.history, toolResults...)
+		a.mu.Unlock()
+
+		continue
 	}
 
 	a.cb.OnError(fmt.Errorf("max iterations (%d) reached", a.maxIter))
 	return fmt.Errorf("max iterations reached")
+}
+
+// parseInlineToolCalls detects inline JSON tool calls in text output.
+// Handles patterns like {"command":"ls -la"} for shell/git tools.
+func (a *Agent) parseInlineToolCalls(text string) []provider.ToolCallEvent {
+	var calls []provider.ToolCallEvent
+
+	// Map of known parameter names to tool names
+	paramToTool := map[string]string{
+		"command": "shell",
+		"path":    "read_file",
+	}
+
+	// Find all JSON objects in the text
+	for i := 0; i < len(text); i++ {
+		if text[i] != '{' {
+			continue
+		}
+
+		// Try to parse a JSON object starting here
+		end := findJSONObject(text[i:])
+		if end == -1 {
+			continue
+		}
+
+		jsonStr := text[i : i+end]
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(jsonStr), &obj); err != nil {
+			continue
+		}
+
+		// Check if this looks like a tool call
+		for param, toolName := range paramToTool {
+			if rawVal, ok := obj[param]; ok {
+				var val string
+				if err := json.Unmarshal(rawVal, &val); err == nil {
+					// Check if the tool exists in registry
+					if _, ok := a.registry.Get(toolName); ok {
+						input, _ := json.Marshal(map[string]string{param: val})
+						calls = append(calls, provider.ToolCallEvent{
+							ID:    a.nextCallID(),
+							Name:  toolName,
+							Input: input,
+						})
+						break
+					}
+				}
+			}
+		}
+
+		i += end - 1
+	}
+
+	return calls
+}
+
+// findJSONObject finds the end index of a JSON object starting at pos 0.
+func findJSONObject(s string) int {
+	if len(s) == 0 || s[0] != '{' {
+		return -1
+	}
+
+	depth := 0
+	inString := false
+	escape := false
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+
+		if escape {
+			escape = false
+			continue
+		}
+
+		if c == '\\' && inString {
+			escape = true
+			continue
+		}
+
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+
+		if inString {
+			continue
+		}
+
+		switch c {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+
+	return -1
+}
+
+// stripInlineJSON removes inline JSON objects from text.
+func (a *Agent) stripInlineJSON(text string) string {
+	result := text
+	for {
+		start := strings.Index(result, "{")
+		if start == -1 {
+			break
+		}
+		end := findJSONObject(result[start:])
+		if end == -1 {
+			break
+		}
+		result = result[:start] + result[start+end:]
+	}
+	return strings.TrimSpace(result)
+}
+
+func (a *Agent) resolveToolInputs(calls []provider.ToolCallEvent, bufs map[string]string) []provider.ToolCallEvent {
+	out := make([]provider.ToolCallEvent, len(calls))
+	for i, tc := range calls {
+		input := tc.Input
+		if input == nil && bufs[tc.ID] != "" {
+			input = json.RawMessage(bufs[tc.ID])
+		}
+		if input == nil {
+			input = json.RawMessage("{}")
+		}
+		out[i] = provider.ToolCallEvent{
+			ID:    tc.ID,
+			Name:  tc.Name,
+			Input: input,
+		}
+	}
+	return out
 }
 
 func (a *Agent) buildToolDefs() []provider.ToolDef {
@@ -211,15 +339,12 @@ func (a *Agent) buildToolDefs() []provider.ToolDef {
 	return defs
 }
 
-// History returns the current conversation history.
 func (a *Agent) History() []provider.Message {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.history
 }
 
-// CompactHistory truncates old turns when the history gets too long.
-// Keeps the system prompt context and the last N turns.
 func (a *Agent) CompactHistory(keepLast int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

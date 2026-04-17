@@ -2,7 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -13,57 +15,90 @@ type Model struct {
 	theme     Theme
 	textarea  textarea.Model
 	spinner   spinner.Model
-	output    strings.Builder
+	output    *strings.Builder
 	status    string
 	quitting  bool
-	waiting   bool // waiting for LLM response
+	waiting   bool
+	width     int
 
-	// Channel to send user input to the agent loop
+	// Track active tools for inline spinner updates
+	activeTools []activeTool
+
 	inputChan chan<- string
+}
+
+type activeTool struct {
+	name    string
+	id      string
+	started time.Time
 }
 
 type userMsg struct{ text string }
 type responseMsg struct{ text string }
-type toolStartMsg struct{ name string }
+type toolStartMsg struct {
+	name string
+	id   string
+}
 type toolDoneMsg struct {
-	name   string
-	output string
-	err    error
+	name    string
+	id      string
+	output  string
+	err     error
+	started time.Time
 }
 type doneMsg struct{}
 type errMsg struct{ err error }
+type tickMsg struct{}
 
 func New(inputChan chan<- string) Model {
 	ta := textarea.New()
-	ta.Placeholder = "Ask anything..."
+	ta.Placeholder = ""
 	ta.Focus()
 	ta.CharLimit = 0
 	ta.SetWidth(80)
 	ta.SetHeight(1)
+	ta.ShowLineNumbers = false
 
 	s := spinner.New()
 	s.Spinner = spinner.Spinner{
 		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
-		FPS:    80,
+		FPS:    100,
 	}
 
 	return Model{
-		theme:     DefaultTheme(),
-		textarea:  ta,
-		spinner:   s,
-		inputChan: inputChan,
+		theme:      DefaultTheme(),
+		textarea:   ta,
+		spinner:    s,
+		output:     &strings.Builder{},
+		inputChan:  inputChan,
+		width:      80,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, textarea.Blink)
+	return tea.Batch(m.spinner.Tick, textarea.Blink, tickCmd)
+}
+
+func tickCmd() tea.Msg {
+	time.Sleep(100 * time.Millisecond)
+	return tickMsg{}
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.textarea.SetWidth(min(msg.Width-4, 120))
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC:
+			if m.waiting {
+				m.output.WriteString(m.theme.Warning.Render("  (cancelled)\n\n"))
+				m.waiting = false
+				return m, nil
+			}
 			m.quitting = true
 			return m, tea.Quit
 		case tea.KeyEnter:
@@ -72,7 +107,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if strings.TrimSpace(input) == "" {
 					return m, nil
 				}
-				m.output.WriteString(m.theme.Bold.Render("> ") + input + "\n\n")
+				m.output.WriteString(m.theme.UserLabel.Render("> ") + input + "\n\n")
 				m.textarea.Reset()
 				m.waiting = true
 				m.inputChan <- input
@@ -80,24 +115,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case tickMsg:
+		if m.waiting || len(m.activeTools) > 0 {
+			return m, tickCmd
+		}
+		return m, nil
+
 	case userMsg:
 		m.output.WriteString(msg.text)
 		return m, nil
 
 	case toolStartMsg:
-		m.output.WriteString(m.theme.Tool.Render(fmt.Sprintf(" ◐ %s", msg.name)) + "\n")
+		m.activeTools = append(m.activeTools, activeTool{
+			name: msg.name, id: msg.id, started: time.Now(),
+		})
+		m.output.WriteString(fmt.Sprintf("  %s %s\n", m.spinner.View(), m.theme.ToolName.Render(msg.name)))
 		return m, m.spinner.Tick
 
 	case toolDoneMsg:
-		icon := m.theme.Success.Render(" ✓")
+		// Remove from active tools
+		for i, t := range m.activeTools {
+			if t.id == msg.id {
+				m.activeTools = append(m.activeTools[:i], m.activeTools[i+1:]...)
+				break
+			}
+		}
+
+		duration := time.Since(msg.started).Round(time.Millisecond)
+		durStr := formatDuration(duration)
+
 		if msg.err != nil {
-			icon = m.theme.Error.Render(" ✗")
+			m.output.WriteString(fmt.Sprintf("  %s %s %s (%s)\n",
+				m.theme.Error.Render("✗"),
+				m.theme.ToolName.Render(msg.name),
+				m.theme.Error.Render(truncate(msg.err.Error(), 80)),
+				m.theme.Dim.Render(durStr),
+			))
+		} else {
+			summary := truncate(strings.TrimSpace(msg.output), 100)
+			m.output.WriteString(fmt.Sprintf("  %s %s %s (%s)\n",
+				m.theme.Success.Render("✓"),
+				m.theme.ToolName.Render(msg.name),
+				m.theme.Dim.Render(summary),
+				m.theme.Dim.Render(durStr),
+			))
 		}
-		summary := msg.output
-		if len(summary) > 120 {
-			summary = summary[:120] + "..."
-		}
-		m.output.WriteString(fmt.Sprintf("%s %s: %s\n", icon, msg.name, summary))
 		return m, nil
 
 	case responseMsg:
@@ -107,11 +169,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case doneMsg:
 		m.output.WriteString("\n")
 		m.waiting = false
+		m.activeTools = nil
 		return m, nil
 
 	case errMsg:
-		m.output.WriteString(m.theme.Error.Render(fmt.Sprintf("Error: %s\n", msg.err)))
+		m.output.WriteString(m.theme.Error.Render(fmt.Sprintf("\n  Error: %s\n\n", msg.err)))
 		m.waiting = false
+		m.activeTools = nil
 		return m, nil
 
 	case spinner.TickMsg:
@@ -133,40 +197,46 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	// Status bar
-	status := m.status
-	if m.waiting {
-		status = m.spinner.View() + " " + status
-	}
-	b.WriteString(m.theme.Dim.Render(status) + "\n\n")
+	b.WriteString(m.renderStatus() + "\n")
 
 	// Output area
 	b.WriteString(m.output.String())
 
-	// Separator
-	b.WriteString(m.theme.Separator.Render(strings.Repeat("─", 60)) + "\n")
+	// Separator + input
+	b.WriteString(m.theme.Separator.Render("─"+strings.Repeat("─", min(m.width-1, 79))) + "\n")
 
-	// Input
 	if m.waiting {
-		b.WriteString(m.theme.Dim.Render("  waiting..."))
+		b.WriteString(m.theme.Dim.Render("  ⋮ "))
 	} else {
-		b.WriteString(m.theme.Prompt.Render("> ") + m.textarea.View())
+		b.WriteString(m.theme.Prompt.Render("> "))
+		b.WriteString(m.textarea.View())
 	}
 
 	return b.String()
 }
 
-// SetStatus updates the status bar text.
-func (m *Model) SetStatus(provider, model, dir string) {
-	m.status = fmt.Sprintf(" vibe code · %s · %s", model, dir)
+func (m Model) renderStatus() string {
+	parts := []string{m.theme.Bold.Render("vibe code")}
+
+	if m.status != "" {
+		parts = append(parts, m.theme.Dim.Render("·"), m.theme.Dim.Render(m.status))
+	}
+
+	return " " + strings.Join(parts, " ")
+}
+
+func (m *Model) SetStatus(model, dir string) {
+	m.status = fmt.Sprintf("%s · %s", model, shortenPath(dir))
 }
 
 // Callback implementation for the agent loop.
 type TUICallback struct {
-	program *tea.Program
+	program    *tea.Program
+	startTimes map[string]time.Time
 }
 
 func NewCallback(p *tea.Program) *TUICallback {
-	return &TUICallback{program: p}
+	return &TUICallback{program: p, startTimes: make(map[string]time.Time)}
 }
 
 func (c *TUICallback) OnText(text string) {
@@ -174,11 +244,17 @@ func (c *TUICallback) OnText(text string) {
 }
 
 func (c *TUICallback) OnToolStart(name, id string) {
-	c.program.Send(toolStartMsg{name: name})
+	c.startTimes[id] = time.Now()
+	c.program.Send(toolStartMsg{name: name, id: id})
 }
 
 func (c *TUICallback) OnToolOutput(name, id, output string, err error) {
-	c.program.Send(toolDoneMsg{name: name, output: output, err: err})
+	started := c.startTimes[id]
+	if started.IsZero() {
+		started = time.Now()
+	}
+	delete(c.startTimes, id)
+	c.program.Send(toolDoneMsg{name: name, id: id, output: output, err: err, started: started})
 }
 
 func (c *TUICallback) OnDone() {
@@ -187,4 +263,45 @@ func (c *TUICallback) OnDone() {
 
 func (c *TUICallback) OnError(err error) {
 	c.program.Send(errMsg{err: err})
+}
+
+// Helpers
+
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	return d.Round(time.Millisecond).String()
+}
+
+func truncate(s string, max int) string {
+	// Replace newlines for single-line display
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
+}
+
+func shortenPath(p string) string {
+	home := ""
+	if h, err := homeDir(); err == nil {
+		home = h
+	}
+	if home != "" && strings.HasPrefix(p, home) {
+		return "~" + p[len(home):]
+	}
+	return p
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func homeDir() (string, error) {
+	return os.UserHomeDir()
 }

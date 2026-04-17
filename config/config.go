@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Provider      string            `json:"provider"`
 	Model         string            `json:"model"`
+	BaseURL       string            `json:"base_url"`
 	APIKeys       map[string]string `json:"api_keys"`
 	AutoApprove   []string          `json:"auto_approve"`
 	MaxIterations int               `json:"max_iterations"`
@@ -60,6 +61,12 @@ func Load() (*Config, error) {
 	// Env overrides
 	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
 		cfg.APIKeys["anthropic"] = v
+	}
+	if v := os.Getenv("ANTHROPIC_AUTH_TOKEN"); v != "" {
+		cfg.APIKeys["anthropic"] = v
+	}
+	if v := os.Getenv("ANTHROPIC_BASE_URL"); v != "" {
+		cfg.BaseURL = v
 	}
 	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
 		cfg.APIKeys["openai"] = v

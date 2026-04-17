@@ -87,7 +87,7 @@ func run(cmd *cobra.Command, args []string) error {
 
 func buildProvider(cfg *config.Config) (provider.Provider, error) {
 	switch cfg.Provider {
-	case "anthropic":
+	case "anthropic", "zhipu":
 		key := cfg.APIKey("anthropic")
 		if key == "" {
 			return nil, fmt.Errorf("set ANTHROPIC_API_KEY or add api_keys.anthropic to ~/.vibecode/config.json")
@@ -95,6 +95,9 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 		model := cfg.Model
 		if model == "" {
 			model = "claude-sonnet-4-6"
+		}
+		if cfg.BaseURL != "" {
+			return provider.NewAnthropicWithBaseURL(key, model, cfg.BaseURL), nil
 		}
 		return provider.NewAnthropic(key, model), nil
 	default:
@@ -132,7 +135,7 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 	inputChan := make(chan string, 16)
 
 	m := tui.New(inputChan)
-	m.SetStatus(cfg.Provider, cfg.Model, dir)
+	m.SetStatus(cfg.Model, dir)
 
 	pgm := tea.NewProgram(m)
 
