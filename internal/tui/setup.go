@@ -13,11 +13,12 @@ import (
 
 // ProviderInfo holds metadata about an AI provider.
 type ProviderInfo struct {
-	ID      string
-	Name    string
-	Models  []ModelInfo
-	BaseURL string
-	APIType string // "anthropic", "openai", "ollama"
+	ID          string
+	Name        string
+	Models      []ModelInfo
+	BaseURL     string
+	AltBaseURLs map[string]string // option name -> URL, shown as endpoint picker if non-empty
+	APIType     string            // "anthropic", "openai", "ollama"
 }
 
 // ModelInfo holds metadata about a model.
@@ -107,6 +108,10 @@ func Providers() []ProviderInfo {
 			Name:    "Zhipu AI / Z.ai (GLM)",
 			APIType: "openai",
 			BaseURL: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+			AltBaseURLs: map[string]string{
+				"Global (z.ai)": "https://api.z.ai/api/anthropic/v1/messages",
+				"China (bigmodel.cn)": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+			},
 			Models: []ModelInfo{
 				{ID: "glm-5.1", Name: "GLM-5.1", Description: "Latest flagship, agentic engineering SOTA (released Apr 2026)"},
 				{ID: "glm-5", Name: "GLM-5", Description: "745B MoE, frontier coding and reasoning (released Feb 2026)"},
@@ -150,6 +155,7 @@ type setupPhase int
 
 const (
 	phaseProvider setupPhase = iota
+	phaseEndpoint
 	phaseModel
 	phaseToken
 	phaseValidating
@@ -165,6 +171,8 @@ type SetupModel struct {
 	phase      setupPhase
 	providers  []ProviderInfo
 	selected   int
+	endpointCur int
+	endpoints  []string // ordered keys from AltBaseURLs
 	modelCur   int
 	input      []rune
 	inputCur   int
@@ -232,6 +240,8 @@ func (m *SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.phase {
 		case phaseProvider:
 			return m.handleProviderKeys(msg)
+		case phaseEndpoint:
+			return m.handleEndpointKeys(msg)
 		case phaseModel:
 			return m.handleModelKeys(msg)
 		case phaseToken:
@@ -266,11 +276,46 @@ func (m *SetupModel) handleProviderKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		m.chosenProvider = m.providers[m.selected]
-		m.modelCur = 0
-		m.phase = phaseModel
 		m.skipKey = m.chosenProvider.APIType == "ollama"
+		if len(m.chosenProvider.AltBaseURLs) > 0 {
+			m.endpoints = make([]string, 0, len(m.chosenProvider.AltBaseURLs))
+			for k := range m.chosenProvider.AltBaseURLs {
+				m.endpoints = append(m.endpoints, k)
+			}
+			m.endpointCur = 0
+			m.phase = phaseEndpoint
+		} else {
+			m.modelCur = 0
+			m.phase = phaseModel
+		}
 	case "esc", "ctrl+c":
 		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m *SetupModel) handleEndpointKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.endpointCur > 0 {
+			m.endpointCur--
+		}
+	case "down", "j":
+		if m.endpointCur < len(m.endpoints)-1 {
+			m.endpointCur++
+		}
+	case "enter":
+		chosen := m.endpoints[m.endpointCur]
+		m.chosenProvider.BaseURL = m.chosenProvider.AltBaseURLs[chosen]
+		// Update APIType based on endpoint
+		if strings.Contains(m.chosenProvider.BaseURL, "anthropic") {
+			m.chosenProvider.APIType = "anthropic"
+		}
+		m.modelCur = 0
+		m.phase = phaseModel
+	case "esc":
+		m.phase = phaseProvider
+		m.selected = 0
 	}
 	return m, nil
 }
@@ -358,7 +403,7 @@ func (m *SetupModel) validateToken() tea.Cmd {
 
 		switch m.chosenProvider.APIType {
 		case "anthropic":
-			return validationDoneMsg{validateAnthropicKey(ctx, m.apiKey)}
+			return validationDoneMsg{validateAnthropicKeyWithBase(ctx, m.chosenProvider.BaseURL, m.apiKey)}
 		case "openai":
 			return validationDoneMsg{validateOpenAICompatible(ctx, m.chosenProvider.BaseURL, m.apiKey, m.chosenModel.ID)}
 		}
@@ -372,6 +417,8 @@ func (m *SetupModel) View() string {
 	switch m.phase {
 	case phaseProvider:
 		return m.viewProvider()
+	case phaseEndpoint:
+		return m.viewEndpoint()
 	case phaseModel:
 		return m.viewModel()
 	case phaseToken:
@@ -409,6 +456,31 @@ func (m *SetupModel) viewProvider() string {
 
 	b.WriteString("\n")
 	b.WriteString("  " + t.Dim.Render("↑/↓ navigate · enter select · esc quit") + "\n")
+	return b.String()
+}
+
+func (m *SetupModel) viewEndpoint() string {
+	t := m.theme
+	var b strings.Builder
+
+	b.WriteString("\n")
+	b.WriteString("  " + t.Brand.Render(m.chosenProvider.Name) + " " + t.Dim.Render("— Select your plan") + "\n")
+	b.WriteString("\n")
+
+	for i, ep := range m.endpoints {
+		cursor := "  "
+		name := ep
+		if i == m.endpointCur {
+			cursor = t.Brand.Render("▸ ")
+			name = t.Brand.Render(name)
+		} else {
+			name = t.Text.Render(name)
+		}
+		b.WriteString("  " + cursor + name + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString("  " + t.Dim.Render("↑/↓ navigate · enter select · esc back") + "\n")
 	return b.String()
 }
 
@@ -506,9 +578,13 @@ func (m *SetupModel) viewError() string {
 // ─── Validation Helpers ────────────────────────────────────────────
 
 func validateAnthropicKey(ctx context.Context, apiKey string) error {
+	return validateAnthropicKeyWithBase(ctx, "https://api.anthropic.com/v1/messages", apiKey)
+}
+
+func validateAnthropicKeyWithBase(ctx context.Context, baseURL, apiKey string) error {
 	body := `{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, strings.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -527,6 +603,9 @@ func validateAnthropicKey(ctx context.Context, apiKey string) error {
 	}
 	if resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("access forbidden — check your API key permissions")
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
 	}
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -556,6 +635,10 @@ func validateOpenAICompatible(ctx context.Context, baseURL, apiKey, model string
 	}
 	if resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("access forbidden — check your API key permissions")
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// 429 = rate limit or quota — key is valid, just throttled
+		return nil
 	}
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(resp.Body)
