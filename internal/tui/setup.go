@@ -213,8 +213,15 @@ func (m *SetupModel) Result() *SetupConfig {
 }
 
 func (m *SetupModel) Init() tea.Cmd {
-	return blinkCmd
+	return setupTickCmd
 }
+
+func setupTickCmd() tea.Msg {
+	time.Sleep(500 * time.Millisecond)
+	return setupTickMsg{}
+}
+
+type setupTickMsg struct{}
 
 func (m *SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -223,9 +230,10 @@ func (m *SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
-	case blinkMsg:
-		m.blinkOn = !m.blinkOn
-		return m, blinkCmd
+	case setupTickMsg:
+		// Keep blinkOn always true so cursor never disappears
+		m.blinkOn = true
+		return m, setupTickCmd
 
 	case validationDoneMsg:
 		if msg.err != nil {

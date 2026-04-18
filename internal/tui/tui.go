@@ -20,8 +20,7 @@ const (
 	assistantDot   = "◉"
 	userPointer    = "▸"
 	toolPointer    = "↳"
-	blinkInterval  = 530 * time.Millisecond
-	tickInterval   = 80 * time.Millisecond
+	tickInterval = 80 * time.Millisecond
 	fadeFrames     = 12
 )
 
@@ -138,7 +137,6 @@ type interruptMsg struct{}
 type doneMsg struct{}
 type errMsg struct{ err error }
 type tickMsg struct{}
-type blinkMsg struct{}
 
 // ─── Constructor ────────────────────────────────────────────────
 
@@ -171,17 +169,12 @@ func New(inputChan chan<- string) *Model {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(tickCmd, blinkCmd)
+	return tickCmd
 }
 
 func tickCmd() tea.Msg {
 	time.Sleep(tickInterval)
 	return tickMsg{}
-}
-
-func blinkCmd() tea.Msg {
-	time.Sleep(blinkInterval)
-	return blinkMsg{}
 }
 
 // ─── Update ─────────────────────────────────────────────────────
@@ -244,16 +237,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.frameIndex = (m.frameIndex + 1) % len(spinnerFrames)
+		m.blinkOn = true // cursor always visible
+		m.input.SetBlink(true)
 		if m.waiting || len(m.toolIndex) > 0 {
 			m.input.SetSpinnerFrame(spinnerFrames[m.frameIndex])
 			return m, tickCmd
 		}
-		return m, nil
-
-	case blinkMsg:
-		m.blinkOn = !m.blinkOn
-		m.input.SetBlink(m.blinkOn)
-		return m, blinkCmd
+		return m, tickCmd // keep ticking so cursor never disappears
 
 	case interruptMsg:
 		m.finalizeStream()
@@ -422,6 +412,9 @@ func countWrappedLines(s string, width int) int {
 	}
 	return count
 }
+
+// unused
+var _ = countWrappedLines
 
 func (m *Model) renderStatusBar() string {
 	t := m.theme
@@ -612,9 +605,7 @@ func (m *Model) renderToolHeadline(tool toolEntry) string {
 
 	switch tool.State {
 	case toolRunning:
-		if !m.blinkOn {
-			icon = "○"
-		}
+		icon = "◎"
 		dotStyle = t.ToolRunning
 	case toolSucceeded:
 		icon = "✓"

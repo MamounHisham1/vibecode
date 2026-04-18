@@ -529,7 +529,10 @@ func (m InputModel) renderBottomBorder() string {
 	return borderStyle.Render("╰" + inner + "╯")
 }
 
-// buildVisualLines wraps the rune buffer into visual lines.
+// buildVisualLines wraps the rune buffer into visual lines, breaking at
+// word boundaries when possible. If a single word is longer than
+// contentWidth it is still broken (hard-wrap) so the cursor remains
+// well-behaved, but normal text flows at spaces and punctuation.
 func (m InputModel) buildVisualLines(contentWidth int) []visualLine {
 	if contentWidth < 1 {
 		contentWidth = 1
@@ -537,6 +540,11 @@ func (m InputModel) buildVisualLines(contentWidth int) []visualLine {
 
 	var vlines []visualLine
 	runeIdx := 0
+
+	// wordBreakRunes lists characters that are valid line-break points.
+	isBreak := func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '-' || r == '_' || r == '.' || r == ',' || r == ';' || r == ':' || r == '/' || r == '\\' || r == '|' || r == '(' || r == ')' || r == '[' || r == ']' || r == '{' || r == '}' || r == '=' || r == '+' || r == '*' || r == '&' || r == '<' || r == '>'
+	}
 
 	// Split by newlines into logical lines, then wrap each
 	for runeIdx <= len(m.value) {
@@ -561,20 +569,58 @@ func (m InputModel) buildVisualLines(contentWidth int) []visualLine {
 			continue
 		}
 
-		// Wrap this logical line at contentWidth
+		// Wrap this logical line at contentWidth, respecting word boundaries
 		start := 0
 		for start < len(lineRunes) {
-			end := start + contentWidth
-			if end > len(lineRunes) {
-				end = len(lineRunes)
+			remaining := len(lineRunes) - start
+			if remaining <= contentWidth {
+				// Rest fits on one line
+				chunk := lineRunes[start:]
+				vlines = append(vlines, visualLine{
+					text:      string(chunk),
+					startRune: runeIdx + start,
+					runeCount: len(chunk),
+				})
+				start = len(lineRunes)
+				continue
 			}
-			chunk := lineRunes[start:end]
-			vlines = append(vlines, visualLine{
-				text:      string(chunk),
-				startRune: runeIdx + start,
-				runeCount: len(chunk),
-			})
-			start = end
+
+			// Look for a word-break character in the range [start, start+contentWidth)
+			breakAt := -1
+			limit := start + contentWidth
+			if limit > len(lineRunes) {
+				limit = len(lineRunes)
+			}
+			for i := start; i < limit; i++ {
+				if isBreak(lineRunes[i]) {
+					breakAt = i
+					break
+				}
+			}
+
+			if breakAt >= 0 {
+				// Found a word boundary — wrap after the break character
+				chunk := lineRunes[start : breakAt+1]
+				vlines = append(vlines, visualLine{
+					text:      string(chunk),
+					startRune: runeIdx + start,
+					runeCount: len(chunk),
+				})
+				start = breakAt + 1
+			} else {
+				// No word boundary found — hard wrap at contentWidth
+				end := start + contentWidth
+				if end > len(lineRunes) {
+					end = len(lineRunes)
+				}
+				chunk := lineRunes[start:end]
+				vlines = append(vlines, visualLine{
+					text:      string(chunk),
+					startRune: runeIdx + start,
+					runeCount: len(chunk),
+				})
+				start = end
+			}
 		}
 
 		runeIdx = lineEnd

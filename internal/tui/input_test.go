@@ -413,6 +413,7 @@ func TestBuildVisualLinesEmpty(t *testing.T) {
 
 func TestBuildVisualLinesWrapping(t *testing.T) {
 	m := newTestInput()
+	// Word-aware wrapping: "abcdefghijklmnop" has no word breaks, so hard-wraps at 15
 	m.SetValue("abcdefghijklmnop") // 16 chars, wraps at 15
 	vlines := m.buildVisualLines(15)
 	if len(vlines) != 2 {
@@ -423,6 +424,43 @@ func TestBuildVisualLinesWrapping(t *testing.T) {
 	}
 	if vlines[1].text != "p" {
 		t.Errorf("expected 'p', got %q", vlines[1].text)
+	}
+}
+
+func TestBuildVisualLinesWordWrap(t *testing.T) {
+	m := newTestInput()
+	// Word-aware wrapping: should break at space, not mid-word
+	m.SetValue("hello world test") // 16 chars
+	vlines := m.buildVisualLines(12)
+	if len(vlines) != 2 {
+		t.Fatalf("expected 2 visual lines, got %d: %v", len(vlines), vlines)
+	}
+	// First break char is space at position 5 → wrap to position 6 ("hello " = 6 chars)
+	if vlines[0].text != "hello " {
+		t.Errorf("expected first line 'hello ', got %q", vlines[0].text)
+	}
+	if vlines[1].text != "world test" {
+		t.Errorf("expected second line 'world test', got %q", vlines[1].text)
+	}
+}
+
+func TestBuildVisualLinesWordWrapLongWord(t *testing.T) {
+	m := newTestInput()
+	// A long word with no break chars should still hard-wrap
+	m.SetValue("abcdefghijklmnopqrstuvwxyz")
+	vlines := m.buildVisualLines(10)
+	for i, vl := range vlines {
+		if vl.runeCount > 10 {
+			t.Errorf("visual line %d has %d chars (max 10): %q", i, vl.runeCount, vl.text)
+		}
+	}
+	// Check continuity
+	var reconstructed strings.Builder
+	for _, vl := range vlines {
+		reconstructed.WriteString(vl.text)
+	}
+	if reconstructed.String() != "abcdefghijklmnopqrstuvwxyz" {
+		t.Errorf("reconstructed text doesn't match: got %q", reconstructed.String())
 	}
 }
 
