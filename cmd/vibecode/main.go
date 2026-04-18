@@ -151,7 +151,7 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 		}
 		model := cfg.Model
 		if model == "" {
-			model = "gpt-4.1"
+			model = "gpt-5.4"
 		}
 		if cfg.BaseURL != "" {
 			return provider.NewOpenAIWithBaseURL(key, model, cfg.BaseURL), nil
@@ -194,7 +194,7 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 		if model == "" {
 			model = "moonshot-v1-8k"
 		}
-		baseURL := "https://api.moonshot.cn/v1/chat/completions"
+		baseURL := "https://api.moonshot.ai/v1/chat/completions"
 		if cfg.BaseURL != "" {
 			baseURL = cfg.BaseURL
 		}
@@ -210,7 +210,7 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 		}
 		model := cfg.Model
 		if model == "" {
-			model = "glm-4-flash"
+			model = "glm-5.1"
 		}
 		if cfg.BaseURL != "" {
 			return provider.NewAnthropicWithBaseURL(key, model, cfg.BaseURL), nil
