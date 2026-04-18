@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
 )
 
@@ -341,7 +342,81 @@ func (m Model) View() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.renderInputArea())
 
-	return b.String()
+	// Viewport management: ensure content fits within terminal height.
+	// When the conversation is long, we truncate old messages from the top
+	// so the latest messages and the input area are always visible.
+	// The input area stays pinned to the bottom of the screen.
+	fullView := b.String()
+	viewportHeight := m.height - 1 // 1 row for status bar
+
+	if viewportHeight < 3 {
+		viewportHeight = 3
+	}
+
+	// Count visual lines of the full view, accounting for wrapping
+	totalLines := countWrappedLines(fullView, m.width)
+
+	if totalLines <= viewportHeight {
+		// Everything fits — no truncation needed
+		return fullView
+	}
+
+	// We need to trim from the top. Approach:
+	// 1. Split into lines
+	// 2. Calculate how many lines to keep from the bottom
+	// 3. Find the earliest complete message boundary we can show
+	// 4. Show from that boundary to the end
+
+	rawLines := strings.Split(fullView, "\n")
+	keepLines := viewportHeight
+
+	if keepLines >= len(rawLines) {
+		return fullView
+	}
+
+	// Find a good message boundary to start from (blank line = message separator)
+	// Start scanning from the cut point upward to find the nearest separator
+	cutIdx := len(rawLines) - keepLines
+	boundaryIdx := cutIdx
+
+	// Search upward for a blank line (message boundary) within a reasonable range
+	searchLimit := min(cutIdx, 8)
+	for i := cutIdx; i >= cutIdx-searchLimit && i >= 0; i-- {
+		if strings.TrimSpace(rawLines[i]) == "" {
+			boundaryIdx = i + 1 // Start from the line after the blank
+			break
+		}
+	}
+
+	trimmed := strings.Join(rawLines[boundaryIdx:], "\n")
+	return trimmed
+}
+
+// countWrappedLines counts the visual lines a string will occupy,
+// accounting for line breaks and word wrapping at the given width.
+func countWrappedLines(s string, width int) int {
+	if width <= 0 {
+		width = 80
+	}
+	lines := strings.Split(s, "\n")
+	count := 0
+	for _, line := range lines {
+		if line == "" {
+			count++
+			continue
+		}
+		// Measure the visual width (handles ANSI escape codes correctly)
+		w := ansi.StringWidth(line)
+		if w <= 0 {
+			w = len(line)
+		}
+		if w > width {
+			count += (w + width - 1) / width
+		} else {
+			count++
+		}
+	}
+	return count
 }
 
 func (m Model) renderStatusBar() string {
@@ -419,20 +494,31 @@ func (m Model) renderTranscript() string {
 
 func (m Model) renderInputArea() string {
 	t := m.theme
+
+	// ─── Input area ─────────────────────────────────────────────────
+	// The input area sits at the very bottom of the screen.
+	// It has a small label ("Input >") to orient the user, followed by
+	// a multi-line textarea that grows as content is typed.
+
+	// Separator line
 	sepWidth := max(20, m.transcriptWidth())
+	sep := t.Separator.Render(strings.Repeat("─", sepWidth))
 
 	if m.waiting {
 		frame := spinnerFrames[m.frameIndex%len(spinnerFrames)]
-		sep := t.Separator.Render(strings.Repeat("─", sepWidth))
 		waiting := t.AssistantDot.Render(frame+" ") + t.Dim.Render("waiting for response...")
 		return sep + "\n" + waiting
 	}
+
+	// ─── Input label ────────────────────────────────────────────
+	inputLabel := t.InputLabel.Render("Input ›")
 
 	// Render the textarea content manually for clean inline display
 	value := m.textarea.Value()
 
 	// Build the prompt line
 	prompt := t.PromptActive.Render("▸ ")
+	promptWidth := 2 // "▸ " visual width
 
 	if strings.TrimSpace(value) == "" {
 		// Show placeholder with blinking cursor
@@ -441,24 +527,67 @@ func (m Model) renderInputArea() string {
 		if m.blinkOn {
 			cursor = "▎"
 		}
-		return prompt + t.InputHint.Render(placeholder) + cursor
+		return sep + "\n" + inputLabel + "\n" + prompt + t.InputHint.Render(placeholder) + cursor
 	}
 
-	// Show actual content — strip textarea chrome
-	// The textarea.View() includes its own border/bg, so we extract just the text
+	// Calculate available width for input text
+	inputWidth := m.inputTextWidth()
+	if inputWidth < 20 {
+		inputWidth = 20
+	}
+
+	// Calculate available rows for input: terminal height minus status bar
+	// minus some content area (at least 3 lines for transcript visibility)
+	maxInputLines := m.height / 3
+	if maxInputLines < 2 {
+		maxInputLines = 2
+	}
+	if maxInputLines > 15 {
+		maxInputLines = 15
+	}
+
+	// Wrap lines to fit the available width
 	lines := strings.Split(value, "\n")
+	var wrappedLines []string
+	for _, line := range lines {
+		if line == "" {
+			wrappedLines = append(wrappedLines, "")
+			continue
+		}
+		// Use ansi.StringWidth for accurate measurement
+		lineW := ansi.StringWidth(line)
+		if lineW <= inputWidth {
+			wrappedLines = append(wrappedLines, line)
+		} else {
+			// Wrap long lines manually
+			wrappedLines = append(wrappedLines, wrapLine(line, inputWidth)...)
+		}
+	}
+
+	// If we have more visual lines than max, scroll to show the bottom
+	scrollOffset := 0
+	if len(wrappedLines) > maxInputLines {
+		scrollOffset = len(wrappedLines) - maxInputLines
+	}
+	visibleLines := wrappedLines[scrollOffset:]
+	if len(visibleLines) > maxInputLines {
+		visibleLines = visibleLines[:maxInputLines]
+	}
+
+	// Build wrapped text block
 	var b strings.Builder
-	for i, line := range lines {
-		if i == 0 {
+	for i, line := range visibleLines {
+		if i == 0 && scrollOffset == 0 {
 			b.WriteString(prompt)
 		} else {
-			b.WriteString("  ")
+			b.WriteString(strings.Repeat(" ", promptWidth))
 		}
 		b.WriteString(line)
-		if i < len(lines)-1 {
+		if i < len(visibleLines)-1 {
 			b.WriteString("\n")
 		}
 	}
+
 	// Add cursor at end
 	cursor := " "
 	if m.blinkOn {
@@ -466,7 +595,38 @@ func (m Model) renderInputArea() string {
 	}
 	b.WriteString(cursor)
 
-	return b.String()
+	// Show a line count indicator when multiple lines
+	lineInfo := ""
+	totalWrapped := len(wrappedLines)
+	if totalWrapped > 1 {
+		lineInfo = t.InputHint.Render(fmt.Sprintf(" (%d lines)", totalWrapped))
+	}
+
+	return sep + "\n" + inputLabel + lineInfo + "\n" + b.String()
+}
+
+// wrapLine wraps a single line at the given visual width, preserving ANSI codes.
+func wrapLine(line string, width int) []string {
+	if width <= 0 {
+		return []string{line}
+	}
+
+	// Simple rune-based wrapping
+	runes := []rune(line)
+	var result []string
+	start := 0
+	for start < len(runes) {
+		end := start + width
+		if end > len(runes) {
+			end = len(runes)
+		}
+		result = append(result, string(runes[start:end]))
+		start = end
+	}
+	if len(result) == 0 {
+		return []string{""}
+	}
+	return result
 }
 
 // ─── Entry Renderers ────────────────────────────────────────────
