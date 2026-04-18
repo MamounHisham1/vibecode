@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -64,8 +63,8 @@ const (
 )
 
 type Model struct {
-	theme    Theme
-	textarea textarea.Model
+	theme  Theme
+	input  InputModel
 
 	entries     []transcriptItem
 	streamBuf   *strings.Builder
@@ -138,32 +137,13 @@ type blinkMsg struct{}
 // ─── Constructor ────────────────────────────────────────────────
 
 func New(inputChan chan<- string) Model {
-	ta := textarea.New()
-	ta.Placeholder = ""
-	ta.Focus()
-	ta.CharLimit = 0
-	ta.SetWidth(80)
-	ta.SetHeight(1)
-	ta.ShowLineNumbers = false
-	ta.Prompt = ""
-
-	// Strip all textarea styling — we render the input ourselves
-	empty := lipgloss.NewStyle()
-	ta.FocusedStyle = textarea.Style{
-		Base:             empty,
-		CursorLine:       empty,
-		CursorLineNumber: empty,
-		EndOfBuffer:      empty,
-		LineNumber:       empty,
-		Placeholder:      empty,
-		Prompt:           empty,
-		Text:             empty,
-	}
-	ta.BlurredStyle = ta.FocusedStyle
+	theme := DefaultTheme()
+	input := NewInputModel(theme)
+	input.SetWidth(80)
 
 	return Model{
-		theme:        DefaultTheme(),
-		textarea:     ta,
+		theme:        theme,
+		input:        input,
 		entries:      nil,
 		streamBuf:    &strings.Builder{},
 		toolIndex:    make(map[string]int),
@@ -184,7 +164,7 @@ func New(inputChan chan<- string) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, tickCmd, blinkCmd)
+	return tea.Batch(tickCmd, blinkCmd)
 }
 
 func tickCmd() tea.Msg {
@@ -204,7 +184,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.textarea.SetWidth(m.inputTextWidth())
+		m.input.SetWidth(m.inputTextWidth())
+		m.input.SetMaxLines(m.height / 2)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -214,11 +195,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.finalizeStream()
 				m.appendSystemMessage("Interrupted by user", false)
 				m.waiting = false
+				m.input.SetWaiting(false)
 				m.toolIndex = make(map[string]int)
 				return m, nil
 			}
-			m.quitting = true
-			return m, tea.Quit
+			if m.input.IsEmpty() {
+				m.quitting = true
+				return m, tea.Quit
+			}
+			// Non-empty input: let input model handle it
+			m.input.Update(msg)
+			return m, nil
 
 		case "ctrl+o":
 			m.toggleExpandAll()
@@ -228,35 +215,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.waiting {
 				return m, nil
 			}
-			raw := m.textarea.Value()
+			raw := m.input.Value()
 			if strings.TrimSpace(raw) == "" {
 				return m, nil
 			}
+			// Backslash+enter inserts newline
+			if strings.HasSuffix(raw, "\\") {
+				m.input.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'\n'}})
+				return m, nil
+			}
 			m.appendUserMessage(raw)
-			m.textarea.Reset()
+			m.input.Reset()
 			m.waiting = true
+			m.input.SetWaiting(true)
 			m.welcome = false
 			m.turnCount++
 			m.advanceSpinnerVerb()
 			m.inputChan <- raw
 			return m, nil
 
-		case "shift+enter":
-			m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'\n'}})
+		default:
+			m.input.Update(msg)
 			return m, nil
 		}
 
 	case tickMsg:
+		m.frameIndex = (m.frameIndex + 1) % len(spinnerFrames)
 		if m.waiting || len(m.toolIndex) > 0 {
-			m.frameIndex = (m.frameIndex + 1) % len(spinnerFrames)
+			m.input.SetSpinnerFrame(spinnerFrames[m.frameIndex])
 			return m, tickCmd
 		}
 		return m, nil
 
 	case blinkMsg:
-		if m.waiting || len(m.toolIndex) > 0 {
-			m.blinkOn = !m.blinkOn
-		}
+		m.blinkOn = !m.blinkOn
+		m.input.SetBlink(m.blinkOn)
 		return m, blinkCmd
 
 	case responseMsg:
@@ -276,6 +269,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case doneMsg:
 		m.finalizeStream()
 		m.waiting = false
+		m.input.SetWaiting(false)
 		m.toolIndex = make(map[string]int)
 		return m, nil
 
@@ -283,13 +277,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.finalizeStream()
 		m.appendSystemMessage(fmt.Sprintf("Error: %s", msg.err), true)
 		m.waiting = false
+		m.input.SetWaiting(false)
 		m.toolIndex = make(map[string]int)
 		return m, nil
 	}
 
-	var cmd tea.Cmd
-	m.textarea, cmd = m.textarea.Update(msg)
-	return m, cmd
+	return m, nil
 }
 
 func (m *Model) toggleExpandAll() {
@@ -311,6 +304,59 @@ func (m *Model) toggleExpandAll() {
 				delete(m.expanded, entry.tool.ID)
 			}
 		}
+	}
+}
+
+func (m *Model) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "ctrl+c":
+		if m.waiting {
+			m.finalizeStream()
+			m.appendSystemMessage("Interrupted by user", false)
+			m.waiting = false
+			m.input.SetWaiting(false)
+			m.toolIndex = make(map[string]int)
+			return nil
+		}
+		if m.input.IsEmpty() {
+			m.quitting = true
+			return tea.Quit
+		}
+		// Non-empty input: let input model handle it
+		m.input.Update(msg)
+		return nil
+
+	case "ctrl+o":
+		m.toggleExpandAll()
+		return nil
+
+	case "enter":
+		if m.waiting {
+			return nil
+		}
+		raw := m.input.Value()
+		if strings.TrimSpace(raw) == "" {
+			return nil
+		}
+		// Backslash+enter inserts newline
+		if strings.HasSuffix(raw, "\\") {
+			m.input.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'\n'}})
+			return nil
+		}
+		m.appendUserMessage(raw)
+		m.input.Reset()
+		m.waiting = true
+		m.input.SetWaiting(true)
+		m.welcome = false
+		m.turnCount++
+		m.advanceSpinnerVerb()
+		m.inputChan <- raw
+		return nil
+
+	default:
+		// Route all other key events (space, letters, etc.) to input
+		m.input.Update(msg)
+		return nil
 	}
 }
 
@@ -493,140 +539,7 @@ func (m Model) renderTranscript() string {
 }
 
 func (m Model) renderInputArea() string {
-	t := m.theme
-
-	// ─── Input area ─────────────────────────────────────────────────
-	// The input area sits at the very bottom of the screen.
-	// It has a small label ("Input >") to orient the user, followed by
-	// a multi-line textarea that grows as content is typed.
-
-	// Separator line
-	sepWidth := max(20, m.transcriptWidth())
-	sep := t.Separator.Render(strings.Repeat("─", sepWidth))
-
-	if m.waiting {
-		frame := spinnerFrames[m.frameIndex%len(spinnerFrames)]
-		waiting := t.AssistantDot.Render(frame+" ") + t.Dim.Render("waiting for response...")
-		return sep + "\n" + waiting
-	}
-
-	// ─── Input label ────────────────────────────────────────────
-	inputLabel := t.InputLabel.Render("Input ›")
-
-	// Render the textarea content manually for clean inline display
-	value := m.textarea.Value()
-
-	// Build the prompt line
-	prompt := t.PromptActive.Render("▸ ")
-	promptWidth := 2 // "▸ " visual width
-
-	if strings.TrimSpace(value) == "" {
-		// Show placeholder with blinking cursor
-		placeholder := "Ask me anything..."
-		cursor := " "
-		if m.blinkOn {
-			cursor = "▎"
-		}
-		return sep + "\n" + inputLabel + "\n" + prompt + t.InputHint.Render(placeholder) + cursor
-	}
-
-	// Calculate available width for input text
-	inputWidth := m.inputTextWidth()
-	if inputWidth < 20 {
-		inputWidth = 20
-	}
-
-	// Calculate available rows for input: terminal height minus status bar
-	// minus some content area (at least 3 lines for transcript visibility)
-	maxInputLines := m.height / 3
-	if maxInputLines < 2 {
-		maxInputLines = 2
-	}
-	if maxInputLines > 15 {
-		maxInputLines = 15
-	}
-
-	// Wrap lines to fit the available width
-	lines := strings.Split(value, "\n")
-	var wrappedLines []string
-	for _, line := range lines {
-		if line == "" {
-			wrappedLines = append(wrappedLines, "")
-			continue
-		}
-		// Use ansi.StringWidth for accurate measurement
-		lineW := ansi.StringWidth(line)
-		if lineW <= inputWidth {
-			wrappedLines = append(wrappedLines, line)
-		} else {
-			// Wrap long lines manually
-			wrappedLines = append(wrappedLines, wrapLine(line, inputWidth)...)
-		}
-	}
-
-	// If we have more visual lines than max, scroll to show the bottom
-	scrollOffset := 0
-	if len(wrappedLines) > maxInputLines {
-		scrollOffset = len(wrappedLines) - maxInputLines
-	}
-	visibleLines := wrappedLines[scrollOffset:]
-	if len(visibleLines) > maxInputLines {
-		visibleLines = visibleLines[:maxInputLines]
-	}
-
-	// Build wrapped text block
-	var b strings.Builder
-	for i, line := range visibleLines {
-		if i == 0 && scrollOffset == 0 {
-			b.WriteString(prompt)
-		} else {
-			b.WriteString(strings.Repeat(" ", promptWidth))
-		}
-		b.WriteString(line)
-		if i < len(visibleLines)-1 {
-			b.WriteString("\n")
-		}
-	}
-
-	// Add cursor at end
-	cursor := " "
-	if m.blinkOn {
-		cursor = "▎"
-	}
-	b.WriteString(cursor)
-
-	// Show a line count indicator when multiple lines
-	lineInfo := ""
-	totalWrapped := len(wrappedLines)
-	if totalWrapped > 1 {
-		lineInfo = t.InputHint.Render(fmt.Sprintf(" (%d lines)", totalWrapped))
-	}
-
-	return sep + "\n" + inputLabel + lineInfo + "\n" + b.String()
-}
-
-// wrapLine wraps a single line at the given visual width, preserving ANSI codes.
-func wrapLine(line string, width int) []string {
-	if width <= 0 {
-		return []string{line}
-	}
-
-	// Simple rune-based wrapping
-	runes := []rune(line)
-	var result []string
-	start := 0
-	for start < len(runes) {
-		end := start + width
-		if end > len(runes) {
-			end = len(runes)
-		}
-		result = append(result, string(runes[start:end]))
-		start = end
-	}
-	if len(result) == 0 {
-		return []string{""}
-	}
-	return result
+	return m.input.View()
 }
 
 // ─── Entry Renderers ────────────────────────────────────────────

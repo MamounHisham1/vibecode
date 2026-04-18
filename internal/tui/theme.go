@@ -45,11 +45,14 @@ type Theme struct {
 	Info    lipgloss.Style
 
 	// Prompt / Input
-	PromptBorder lipgloss.Style
-	PromptActive lipgloss.Style
-	InputHint    lipgloss.Style
-	InputLabel   lipgloss.Style
-	Separator    lipgloss.Style
+	PromptChar    lipgloss.Style
+	PromptBorder  lipgloss.Style
+	PromptActive  lipgloss.Style
+	InverseCursor lipgloss.Style
+	InputHint     lipgloss.Style
+	InputLabel    lipgloss.Style
+	InputBorderDim lipgloss.Style
+	Separator     lipgloss.Style
 
 	// Suggestions
 	Suggestion      lipgloss.Style
@@ -118,11 +121,14 @@ func DefaultTheme() Theme {
 		Info:    lipgloss.NewStyle().Foreground(lipgloss.Color("#6CB4EE")),
 
 		// Prompt / Input
-		PromptBorder: lipgloss.NewStyle().Foreground(lipgloss.Color("#4A4A4A")),
-		PromptActive: lipgloss.NewStyle().Foreground(brand),
-		InputHint:    lipgloss.NewStyle().Foreground(lipgloss.Color("#555555")),
-		InputLabel:   lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")),
-		Separator:    lipgloss.NewStyle().Foreground(lipgloss.Color("#2E2E2E")),
+		PromptChar:    lipgloss.NewStyle().Foreground(brand).Bold(true),
+		PromptBorder:  lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")),
+		PromptActive:  lipgloss.NewStyle().Foreground(brand),
+		InverseCursor: lipgloss.NewStyle().Background(lipgloss.Color("#FFFFFF")).Foreground(lipgloss.Color("#000000")),
+		InputHint:     lipgloss.NewStyle().Foreground(lipgloss.Color("#555555")),
+		InputLabel:    lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")),
+		InputBorderDim: lipgloss.NewStyle().Foreground(lipgloss.Color("#333333")),
+		Separator:     lipgloss.NewStyle().Foreground(lipgloss.Color("#2E2E2E")),
 
 		// Suggestions
 		Suggestion:     lipgloss.NewStyle().Foreground(lipgloss.Color("#B1B9F9")),
