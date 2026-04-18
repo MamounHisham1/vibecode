@@ -161,6 +161,9 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 	case "deepseek":
 		key := cfg.APIKey("deepseek")
 		if key == "" {
+			key = cfg.APIKey("openai")
+		}
+		if key == "" {
 			return nil, fmt.Errorf("run 'vibecode' to configure your DeepSeek API key")
 		}
 		model := cfg.Model
@@ -175,6 +178,15 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 
 	case "kimi", "moonshot":
 		key := cfg.APIKey(cfg.Provider)
+		if key == "" {
+			key = cfg.APIKey("kimi")
+		}
+		if key == "" {
+			key = cfg.APIKey("moonshot")
+		}
+		if key == "" {
+			key = cfg.APIKey("openai")
+		}
 		if key == "" {
 			return nil, fmt.Errorf("run 'vibecode' to configure your %s API key", cfg.Provider)
 		}
@@ -191,20 +203,25 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 	case "zhipu":
 		key := cfg.APIKey("zhipu")
 		if key == "" {
+			key = cfg.APIKey("anthropic")
+		}
+		if key == "" {
 			return nil, fmt.Errorf("run 'vibecode' to configure your Zhipu AI API key")
 		}
 		model := cfg.Model
 		if model == "" {
 			model = "glm-4-flash"
 		}
-		baseURL := "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 		if cfg.BaseURL != "" {
-			baseURL = cfg.BaseURL
+			return provider.NewAnthropicWithBaseURL(key, model, cfg.BaseURL), nil
 		}
-		return provider.NewOpenAIWithBaseURL(key, model, baseURL), nil
+		return provider.NewOpenAIWithBaseURL(key, model, "https://open.bigmodel.cn/api/paas/v4/chat/completions"), nil
 
 	case "qwen":
 		key := cfg.APIKey("qwen")
+		if key == "" {
+			key = cfg.APIKey("openai")
+		}
 		if key == "" {
 			return nil, fmt.Errorf("run 'vibecode' to configure your Qwen API key")
 		}
