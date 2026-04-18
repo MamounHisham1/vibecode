@@ -429,18 +429,18 @@ func TestBuildVisualLinesWrapping(t *testing.T) {
 
 func TestBuildVisualLinesWordWrap(t *testing.T) {
 	m := newTestInput()
-	// Word-aware wrapping: should break at space, not mid-word
+	// Word-aware wrapping: should break at the LAST space within the width
 	m.SetValue("hello world test") // 16 chars
 	vlines := m.buildVisualLines(12)
 	if len(vlines) != 2 {
 		t.Fatalf("expected 2 visual lines, got %d: %v", len(vlines), vlines)
 	}
-	// First break char is space at position 5 → wrap to position 6 ("hello " = 6 chars)
-	if vlines[0].text != "hello " {
-		t.Errorf("expected first line 'hello ', got %q", vlines[0].text)
+	// Last break char within width 12 is space at position 11 → "hello world " (12 chars)
+	if vlines[0].text != "hello world " {
+		t.Errorf("expected first line 'hello world ', got %q", vlines[0].text)
 	}
-	if vlines[1].text != "world test" {
-		t.Errorf("expected second line 'world test', got %q", vlines[1].text)
+	if vlines[1].text != "test" {
+		t.Errorf("expected second line 'test', got %q", vlines[1].text)
 	}
 }
 

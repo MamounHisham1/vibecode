@@ -585,13 +585,13 @@ func (m InputModel) buildVisualLines(contentWidth int) []visualLine {
 				continue
 			}
 
-			// Look for a word-break character in the range [start, start+contentWidth)
+			// Look for the last word-break character within the line width
 			breakAt := -1
 			limit := start + contentWidth
 			if limit > len(lineRunes) {
 				limit = len(lineRunes)
 			}
-			for i := start; i < limit; i++ {
+			for i := limit - 1; i >= start; i-- {
 				if isBreak(lineRunes[i]) {
 					breakAt = i
 					break
