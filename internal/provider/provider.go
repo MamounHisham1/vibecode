@@ -93,17 +93,24 @@ func AssistantTextMessage(text string) Message {
 func AssistantToolCallsMessage(calls []ToolCallEvent) Message {
 	blocks := make([]ContentBlock, len(calls))
 	for i, call := range calls {
+		input := call.Input
+		if input == nil || !json.Valid(input) {
+			input = json.RawMessage(`{}`)
+		}
 		blocks[i] = ContentBlock{
 			Type:       "tool_use",
 			ToolCallID: call.ID,
 			ToolName:   call.Name,
-			Input:      call.Input,
+			Input:      input,
 		}
 	}
 	return Message{Role: "assistant", Content: blocks}
 }
 
 func ToolResultMessage(toolCallID string, result json.RawMessage, isError bool) Message {
+	if result == nil || !json.Valid(result) {
+		result = json.RawMessage(`""`)
+	}
 	return Message{
 		Role: "user",
 		Content: []ContentBlock{

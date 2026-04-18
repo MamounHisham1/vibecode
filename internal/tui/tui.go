@@ -1,44 +1,126 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
+)
+
+const (
+	assistantDot   = "◉"
+	userPointer    = "▸"
+	toolPointer    = "↳"
+	blinkInterval  = 530 * time.Millisecond
+	tickInterval   = 80 * time.Millisecond
+	fadeFrames     = 12
+)
+
+var spinnerVerbs = []string{
+	"Thinking",
+	"Analyzing",
+	"Planning",
+	"Reasoning",
+	"Working",
+	"Computing",
+	"Building",
+	"Processing",
+	"Deliberating",
+	"Synthesizing",
+}
+
+var spinnerFrames = []string{
+	"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+}
+
+var readLinesShownRE = regexp.MustCompile(`\((\d+) of (\d+) lines shown\)\s*$`)
+
+// ─── Types ──────────────────────────────────────────────────────
+
+type transcriptKind int
+
+const (
+	transcriptUser transcriptKind = iota
+	transcriptAssistant
+	transcriptTool
+	transcriptSystem
+)
+
+type toolState int
+
+const (
+	toolRunning toolState = iota
+	toolSucceeded
+	toolFailed
 )
 
 type Model struct {
-	theme     Theme
-	textarea  textarea.Model
-	spinner   spinner.Model
-	output    *strings.Builder
-	status    string
-	quitting  bool
-	waiting   bool
-	width     int
+	theme    Theme
+	textarea textarea.Model
 
-	activeTools []activeTool
+	entries     []transcriptItem
 	streamBuf   *strings.Builder
+	toolIndex   map[string]int
+	status      string
+	modelName   string
+	dir         string
+	quitting    bool
+	waiting     bool
+	welcome     bool
+	width       int
+	height      int
+	blinkOn     bool
+	verbIndex   int
+	frameIndex  int
+	inputChan   chan<- string
+	expanded    map[string]bool
+	ctrlOPress  bool
 
-	inputChan chan<- string
+	// Token/cost tracking
+	totalTokens int
+	lastTokens  int
+
+	// Session stats
+	sessionStart time.Time
+	turnCount    int
 }
 
-type activeTool struct {
-	name    string
-	id      string
-	started time.Time
+type transcriptItem struct {
+	kind    transcriptKind
+	text    string
+	tool    toolEntry
+	isError bool
+}
+
+type toolEntry struct {
+	ID       string
+	Name     string
+	Label    string
+	Args     string
+	State    toolState
+	Started  time.Time
+	Finished time.Time
+	Summary  string
+	Preview  []string
+	ErrText  string
 }
 
 type responseMsg struct{ chunk string }
+
 type toolStartMsg struct {
-	name string
-	id   string
+	name  string
+	id    string
+	input json.RawMessage
 }
+
 type toolDoneMsg struct {
 	name    string
 	id      string
@@ -46,9 +128,13 @@ type toolDoneMsg struct {
 	err     error
 	started time.Time
 }
+
 type doneMsg struct{}
 type errMsg struct{ err error }
 type tickMsg struct{}
+type blinkMsg struct{}
+
+// ─── Constructor ────────────────────────────────────────────────
 
 func New(inputChan chan<- string) Model {
 	ta := textarea.New()
@@ -58,85 +144,119 @@ func New(inputChan chan<- string) Model {
 	ta.SetWidth(80)
 	ta.SetHeight(1)
 	ta.ShowLineNumbers = false
+	ta.Prompt = ""
 
-	s := spinner.New()
-	s.Spinner = spinner.Spinner{
-		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
-		FPS:    80,
+	// Strip all textarea styling — we render the input ourselves
+	empty := lipgloss.NewStyle()
+	ta.FocusedStyle = textarea.Style{
+		Base:             empty,
+		CursorLine:       empty,
+		CursorLineNumber: empty,
+		EndOfBuffer:      empty,
+		LineNumber:       empty,
+		Placeholder:      empty,
+		Prompt:           empty,
+		Text:             empty,
 	}
+	ta.BlurredStyle = ta.FocusedStyle
 
 	return Model{
-		theme:      DefaultTheme(),
-		textarea:   ta,
-		spinner:    s,
-		output:     &strings.Builder{},
-		streamBuf:  &strings.Builder{},
-		inputChan:  inputChan,
-		width:      80,
+		theme:        DefaultTheme(),
+		textarea:     ta,
+		entries:      nil,
+		streamBuf:    &strings.Builder{},
+		toolIndex:    make(map[string]int),
+		status:       "",
+		modelName:    "",
+		quitting:     false,
+		waiting:      false,
+		welcome:      true,
+		width:        80,
+		height:       24,
+		blinkOn:      true,
+		verbIndex:    0,
+		frameIndex:   0,
+		inputChan:    inputChan,
+		expanded:     make(map[string]bool),
+		sessionStart: time.Now(),
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, tickCmd)
+	return tea.Batch(textarea.Blink, tickCmd, blinkCmd)
 }
 
 func tickCmd() tea.Msg {
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(tickInterval)
 	return tickMsg{}
 }
 
-// finalizeStream flushes stream buffer to output as rendered markdown.
-func (m *Model) finalizeStream() {
-	text := m.streamBuf.String()
-	if text == "" {
-		return
-	}
-	// Render each line with the ⎿ prefix like Claude Code's MessageResponse
-	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
-	for _, line := range lines {
-		m.output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render("  ⎿  ") + line + "\n")
-	}
-	m.streamBuf.Reset()
+func blinkCmd() tea.Msg {
+	time.Sleep(blinkInterval)
+	return blinkMsg{}
 }
+
+// ─── Update ─────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.textarea.SetWidth(min(msg.Width-4, 120))
+		m.height = msg.Height
+		m.textarea.SetWidth(m.inputTextWidth())
 		return m, nil
 
 	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC:
+		switch msg.String() {
+		case "ctrl+c":
 			if m.waiting {
 				m.finalizeStream()
-				m.output.WriteString("\n")
+				m.appendSystemMessage("Interrupted by user", false)
 				m.waiting = false
+				m.toolIndex = make(map[string]int)
 				return m, nil
 			}
 			m.quitting = true
 			return m, tea.Quit
-		case tea.KeyEnter:
-			if !m.waiting {
-				input := m.textarea.Value()
-				if strings.TrimSpace(input) == "" {
-					return m, nil
-				}
-				// User message: no prefix, just the text
-				m.output.WriteString(input + "\n\n")
-				m.textarea.Reset()
-				m.waiting = true
-				m.inputChan <- input
+
+		case "ctrl+o":
+			m.toggleExpandAll()
+			return m, nil
+
+		case "enter":
+			if m.waiting {
 				return m, nil
 			}
+			raw := m.textarea.Value()
+			if strings.TrimSpace(raw) == "" {
+				return m, nil
+			}
+			m.appendUserMessage(raw)
+			m.textarea.Reset()
+			m.waiting = true
+			m.welcome = false
+			m.turnCount++
+			m.advanceSpinnerVerb()
+			m.inputChan <- raw
+			return m, nil
+
+		case "shift+enter":
+			m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'\n'}})
+			return m, nil
 		}
 
 	case tickMsg:
-		if m.waiting || len(m.activeTools) > 0 {
+		if m.waiting || len(m.toolIndex) > 0 {
+			m.frameIndex = (m.frameIndex + 1) % len(spinnerFrames)
 			return m, tickCmd
 		}
 		return m, nil
+
+	case blinkMsg:
+		if m.waiting || len(m.toolIndex) > 0 {
+			m.blinkOn = !m.blinkOn
+		}
+		return m, blinkCmd
 
 	case responseMsg:
 		m.streamBuf.WriteString(msg.chunk)
@@ -144,64 +264,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case toolStartMsg:
 		m.finalizeStream()
-		m.activeTools = append(m.activeTools, activeTool{
-			name: msg.name, id: msg.id, started: time.Now(),
-		})
-		// Claude Code: ● ToolName — no extra formatting
-		m.output.WriteString(fmt.Sprintf("● %s\n", m.theme.ToolName.Render(msg.name)))
-		return m, tickCmd
+		m.addToolEntry(msg.name, msg.id, msg.input)
+		return m, nil
 
 	case toolDoneMsg:
-		for i, t := range m.activeTools {
-			if t.id == msg.id {
-				m.activeTools = append(m.activeTools[:i], m.activeTools[i+1:]...)
-				break
-			}
-		}
-
-		duration := time.Since(msg.started).Round(time.Millisecond)
-		durStr := formatDuration(duration)
-
-		if msg.err != nil {
-			m.output.WriteString(fmt.Sprintf("● %s (%s) %s\n",
-				m.theme.ToolError.Render(msg.name),
-				m.theme.ToolError.Render(truncate(msg.err.Error(), 60)),
-				m.theme.Dim.Render(durStr),
-			))
-		} else {
-			summary := truncate(strings.TrimSpace(msg.output), 80)
-			m.output.WriteString(fmt.Sprintf("● %s (%s) %s\n",
-				m.theme.ToolSuccess.Render(msg.name),
-				m.theme.Dim.Render(summary),
-				m.theme.Dim.Render(durStr),
-			))
-		}
+		m.finalizeStream()
+		m.completeToolEntry(msg.id, msg.output, msg.err, msg.started)
 		return m, nil
 
 	case doneMsg:
 		m.finalizeStream()
-		m.output.WriteString("\n")
 		m.waiting = false
-		m.activeTools = nil
+		m.toolIndex = make(map[string]int)
 		return m, nil
 
 	case errMsg:
 		m.finalizeStream()
-		m.output.WriteString(m.theme.Error.Render(fmt.Sprintf("Error: %s\n\n", msg.err)))
+		m.appendSystemMessage(fmt.Sprintf("Error: %s", msg.err), true)
 		m.waiting = false
-		m.activeTools = nil
+		m.toolIndex = make(map[string]int)
 		return m, nil
-
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
 	}
 
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
 	return m, cmd
 }
+
+func (m *Model) toggleExpandAll() {
+	anyCollapsed := false
+	for _, entry := range m.entries {
+		if entry.kind == transcriptTool && entry.tool.State != toolRunning {
+			if !m.expanded[entry.tool.ID] {
+				anyCollapsed = true
+				break
+			}
+		}
+	}
+
+	for _, entry := range m.entries {
+		if entry.kind == transcriptTool && entry.tool.State != toolRunning {
+			if anyCollapsed {
+				m.expanded[entry.tool.ID] = true
+			} else {
+				delete(m.expanded, entry.tool.ID)
+			}
+		}
+	}
+}
+
+// ─── View ───────────────────────────────────────────────────────
 
 func (m Model) View() string {
 	if m.quitting {
@@ -211,53 +323,480 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	// Status bar
-	b.WriteString(m.renderStatus() + "\n\n")
+	b.WriteString(m.renderStatusBar())
 
-	// Finished output
-	b.WriteString(m.output.String())
-
-	// Live streaming text — render with ⎿ prefix
-	if m.streamBuf.Len() > 0 {
-		stream := m.streamBuf.String()
-		lines := strings.Split(strings.TrimRight(stream, "\n"), "\n")
-		prefix := lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render("  ⎿  ")
-		for _, line := range lines {
-			b.WriteString(prefix + line + "\n")
-		}
+	// Welcome screen
+	if m.welcome && len(m.entries) == 0 && m.streamBuf.Len() == 0 && len(m.toolIndex) == 0 {
+		b.WriteString("\n")
+		b.WriteString(m.renderWelcome())
 	}
 
-	// Thin separator
-	sepWidth := min(m.width-1, 79)
-	if sepWidth < 10 {
-		sepWidth = 40
+	// Transcript
+	content := m.renderTranscript()
+	if content != "" {
+		b.WriteString("\n" + content)
 	}
-	b.WriteString(m.theme.Subtle.Render(strings.Repeat("─", sepWidth)) + "\n")
 
-	// Input
+	// Input area
+	b.WriteString("\n\n")
+	b.WriteString(m.renderInputArea())
+
+	return b.String()
+}
+
+func (m Model) renderStatusBar() string {
+	t := m.theme
+	width := m.width
+
+	// Left side: brand + model + directory
+	left := " " + t.StatusBarBrand.Render("vibe code")
+
+	if m.status != "" {
+		left += t.StatusBarInfo.Render(" " + m.status)
+	}
+
+	// Right side: turn count + elapsed + hints
+	elapsed := time.Since(m.sessionStart).Round(time.Second)
+	right := ""
+	if m.turnCount > 0 {
+		right += t.StatusBarDim.Render(fmt.Sprintf("turn %d", m.turnCount))
+		right += t.StatusBarDim.Render(" · ")
+	}
+	right += t.StatusBarDim.Render(elapsed.String())
+
 	if m.waiting {
-		b.WriteString(m.theme.Brand.Render("  " + m.spinner.View()))
-	} else {
-		b.WriteString(m.theme.Prompt.Render("> "))
-		b.WriteString(m.textarea.View())
+		right += t.StatusBarDim.Render(" · ")
+		right += t.StatusBar.Render("ctrl+c stop")
+	}
+
+	// Pad to full width
+	leftW := lipgloss.Width(left)
+	rightW := lipgloss.Width(right)
+	pad := width - leftW - rightW
+	if pad < 1 {
+		pad = 1
+	}
+
+	bar := left + strings.Repeat(" ", pad) + right
+	// Fill to width with background
+	bar = t.StatusBar.Render(bar)
+	// Ensure it fills the width
+	if lipgloss.Width(bar) < width {
+		bar += t.StatusBar.Render(strings.Repeat(" ", width-lipgloss.Width(bar)))
+	}
+
+	return bar
+}
+
+func (m Model) renderTranscript() string {
+	var b strings.Builder
+
+	for i, entry := range m.entries {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(m.renderEntry(entry))
+	}
+
+	// Live streaming text
+	if m.streamBuf.Len() > 0 {
+		if len(m.entries) > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(m.renderAssistantEntry(m.streamBuf.String()))
+	}
+
+	// Thinking spinner
+	if m.waiting && len(m.toolIndex) == 0 && m.streamBuf.Len() == 0 {
+		if len(m.entries) > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(m.renderThinkingState())
 	}
 
 	return b.String()
 }
 
-func (m Model) renderStatus() string {
-	return fmt.Sprintf(" %s %s",
-		m.theme.Brand.Bold(true).Render("vibe code"),
-		m.theme.Dim.Render(m.status),
+func (m Model) renderInputArea() string {
+	t := m.theme
+	sepWidth := max(20, m.transcriptWidth())
+
+	if m.waiting {
+		frame := spinnerFrames[m.frameIndex%len(spinnerFrames)]
+		sep := t.Separator.Render(strings.Repeat("─", sepWidth))
+		waiting := t.AssistantDot.Render(frame+" ") + t.Dim.Render("waiting for response...")
+		return sep + "\n" + waiting
+	}
+
+	// Render the textarea content manually for clean inline display
+	value := m.textarea.Value()
+
+	// Build the prompt line
+	prompt := t.PromptActive.Render("▸ ")
+
+	if strings.TrimSpace(value) == "" {
+		// Show placeholder with blinking cursor
+		placeholder := "Ask me anything..."
+		cursor := " "
+		if m.blinkOn {
+			cursor = "▎"
+		}
+		return prompt + t.InputHint.Render(placeholder) + cursor
+	}
+
+	// Show actual content — strip textarea chrome
+	// The textarea.View() includes its own border/bg, so we extract just the text
+	lines := strings.Split(value, "\n")
+	var b strings.Builder
+	for i, line := range lines {
+		if i == 0 {
+			b.WriteString(prompt)
+		} else {
+			b.WriteString("  ")
+		}
+		b.WriteString(line)
+		if i < len(lines)-1 {
+			b.WriteString("\n")
+		}
+	}
+	// Add cursor at end
+	cursor := " "
+	if m.blinkOn {
+		cursor = "▎"
+	}
+	b.WriteString(cursor)
+
+	return b.String()
+}
+
+// ─── Entry Renderers ────────────────────────────────────────────
+
+func (m Model) renderEntry(entry transcriptItem) string {
+	switch entry.kind {
+	case transcriptUser:
+		return m.renderUserEntry(entry.text)
+	case transcriptAssistant:
+		return m.renderAssistantEntry(entry.text)
+	case transcriptTool:
+		return m.renderToolEntry(entry.tool)
+	case transcriptSystem:
+		return m.renderSystemEntry(entry.text, entry.isError)
+	default:
+		return ""
+	}
+}
+
+func (m Model) renderUserEntry(text string) string {
+	t := m.theme
+	w := max(20, m.transcriptWidth()-4)
+	wrapped := wordwrap.String(strings.TrimRight(text, "\n"), w)
+
+	prefix := t.UserPointer.Render(userPointer + " ")
+	return prefix + t.UserText.Render(wrapped)
+}
+
+func (m Model) renderAssistantEntry(text string) string {
+	t := m.theme
+	dot := t.AssistantDot.Render(assistantDot + " ")
+	return gutterBlock(
+		dot,
+		"  ",
+		RenderMarkdown(text),
 	)
 }
 
-func (m *Model) SetStatus(model, dir string) {
-	m.status = fmt.Sprintf("· %s · %s", model, shortenPath(dir))
+func (m Model) renderToolEntry(tool toolEntry) string {
+	var b strings.Builder
+	b.WriteString(m.renderToolHeadline(tool))
+
+	if tool.State == toolRunning {
+		frame := spinnerFrames[m.frameIndex%len(spinnerFrames)]
+		bodyLines := []string{m.theme.ToolRunning.Render(frame + " Running…")}
+		b.WriteString("\n")
+		b.WriteString(renderNestedBlock(bodyLines, m.theme.ToolBorder.Render("  "+toolPointer+"  ")))
+		return strings.TrimRight(b.String(), "\n")
+	}
+
+	// Collapsed by default
+	if !m.expanded[tool.ID] {
+		summary := tool.Summary
+		if summary == "" && tool.State == toolFailed {
+			summary = tool.ErrText
+		}
+		if summary != "" {
+			style := m.theme.Text
+			if tool.State == toolFailed {
+				style = m.theme.Error
+			}
+			b.WriteString("\n")
+			b.WriteString(renderNestedBlock([]string{style.Render(summary)}, m.theme.ToolBorder.Render("  "+toolPointer+"  ")))
+		}
+		if len(tool.Preview) > 0 {
+			b.WriteString("\n")
+			b.WriteString(renderNestedBlock(
+				[]string{m.theme.Dim.Render("ctrl+o to expand")},
+				m.theme.Subtle.Render("  "+toolPointer+"  "),
+			))
+		}
+		return strings.TrimRight(b.String(), "\n")
+	}
+
+	// Expanded
+	bodyLines := make([]string, 0, len(tool.Preview)+1)
+
+	for _, line := range tool.Preview {
+		bodyLines = append(bodyLines, m.theme.Dim.Render(line))
+	}
+
+	if tool.State == toolFailed {
+		summary := tool.Summary
+		if summary == "" {
+			summary = tool.ErrText
+		}
+		if summary != "" {
+			bodyLines = append(bodyLines, m.theme.Error.Render(summary))
+		}
+	} else if tool.Summary != "" {
+		style := m.theme.Text
+		if len(tool.Preview) > 0 {
+			style = m.theme.Dim
+		}
+		bodyLines = append(bodyLines, style.Render(tool.Summary))
+	}
+
+	if len(bodyLines) > 0 {
+		b.WriteString("\n")
+		b.WriteString(renderNestedBlock(bodyLines, m.theme.ToolBorder.Render("  "+toolPointer+"  ")))
+	}
+
+	return strings.TrimRight(b.String(), "\n")
 }
 
-// Callback for the agent loop.
+func (m Model) renderToolHeadline(tool toolEntry) string {
+	t := m.theme
+
+	// Icon based on tool type
+	icon := "⚙"
+	dotStyle := t.ToolDot
+
+	switch tool.State {
+	case toolRunning:
+		if !m.blinkOn {
+			icon = "○"
+		}
+		dotStyle = t.ToolRunning
+	case toolSucceeded:
+		icon = "✓"
+		dotStyle = t.ToolSuccess
+	case toolFailed:
+		icon = "✗"
+		dotStyle = t.ToolError
+	}
+
+	line := dotStyle.Render(icon) + " " + t.ToolName.Render(tool.Label)
+	if tool.Args != "" {
+		line += " " + t.ToolArgs.Render(tool.Args)
+	}
+	if !tool.Finished.IsZero() && !tool.Started.IsZero() {
+		dur := formatDuration(tool.Finished.Sub(tool.Started))
+		if dur != "" {
+			line += " " + t.ToolDuration.Render(dur)
+		}
+	}
+	return line
+}
+
+func (m Model) renderSystemEntry(text string, isError bool) string {
+	style := m.theme.Dim
+	if isError {
+		style = m.theme.Error
+	}
+	icon := "ℹ"
+	if isError {
+		icon = "⚠"
+	}
+	return renderNestedBlock(
+		[]string{style.Render(icon + " " + text)},
+		m.theme.Subtle.Render("  "),
+	)
+}
+
+func (m Model) renderThinkingState() string {
+	t := m.theme
+	frame := spinnerFrames[m.frameIndex%len(spinnerFrames)]
+	verb := spinnerVerbs[m.verbIndex%len(spinnerVerbs)]
+
+	spinner := t.AssistantDot.Render(frame)
+	label := t.BrandLight.Render(verb)
+	dots := t.Dim.Render("...")
+
+	return spinner + " " + label + dots
+}
+
+func (m Model) renderWelcome() string {
+	t := m.theme
+	var b strings.Builder
+
+	b.WriteString("\n")
+
+	// ASCII Art Title
+	titleLines := []string{
+		"██╗   ██╗██╗██████╗ ███████╗ ██████╗    ██████╗ ███████╗ ██████╗ ███████╗",
+		"██║   ██║██║██╔══██╗██╔════╝██╔═══██╗   ██╔══██╗██╔════╝██╔═══██╗██╔════╝",
+		"██║   ██║██║██║  ██║█████╗  ██║   ██║   ██████╔╝█████╗  ██║   ██║███████╗",
+		"╚██╗ ██╔╝██║██║  ██║██╔══╝  ██║   ██║   ██╔══██╗██╔══╝  ██║   ██║╚════██║",
+		" ╚████╔╝ ██║██████╔╝███████╗╚██████╔╝   ██║  ██║███████╗╚██████╔╝███████║",
+		"  ╚═══╝  ╚═╝╚═════╝ ╚══════╝ ╚═════╝    ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚══════╝",
+	}
+
+	maxW := m.transcriptWidth()
+	for _, line := range titleLines {
+		if len(line) > maxW {
+			continue
+		}
+		b.WriteString("  " + t.WelcomeBorder.Render(line) + "\n")
+	}
+
+	b.WriteString("\n")
+
+	// Subtitle
+	subtitle := "AI-powered coding agent for your terminal"
+	b.WriteString("  " + t.WelcomeSubtitle.Render(subtitle) + "\n")
+	b.WriteString("\n")
+
+	// Model info
+	if m.status != "" {
+		b.WriteString("  " + t.Dim.Render("Model: ") + t.Text.Render(m.status) + "\n")
+		b.WriteString("\n")
+	}
+
+	// Quick start tips with styled keys
+	b.WriteString("  " + t.Bold.Render("Getting started") + "\n")
+	b.WriteString("\n")
+
+	tips := []struct {
+		key  string
+		desc string
+	}{
+		{"enter", "Send a message"},
+		{"shift+enter", "New line (multi-line input)"},
+		{"ctrl+o", "Expand/collapse tool output"},
+		{"ctrl+c", "Stop generation or exit"},
+	}
+
+	for _, tip := range tips {
+		b.WriteString("  " + t.WelcomeKey.Render("  "+tip.key) + "  " + t.WelcomeDesc.Render(tip.desc) + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString("  " + t.Dim.Render("Type a message below to get started →") + "\n")
+
+	return b.String()
+}
+
+// ─── Data Methods ───────────────────────────────────────────────
+
+func (m *Model) finalizeStream() {
+	text := strings.TrimSpace(m.streamBuf.String())
+	if text == "" {
+		m.streamBuf.Reset()
+		return
+	}
+	m.entries = append(m.entries, transcriptItem{
+		kind: transcriptAssistant,
+		text: text,
+	})
+	m.streamBuf.Reset()
+}
+
+func (m *Model) appendUserMessage(text string) {
+	m.entries = append(m.entries, transcriptItem{
+		kind: transcriptUser,
+		text: strings.TrimRight(text, "\n"),
+	})
+}
+
+func (m *Model) appendSystemMessage(text string, isError bool) {
+	m.entries = append(m.entries, transcriptItem{
+		kind:    transcriptSystem,
+		text:    text,
+		isError: isError,
+	})
+}
+
+func (m *Model) addToolEntry(name, id string, input json.RawMessage) {
+	label, args := summarizeToolCall(name, input)
+	m.entries = append(m.entries, transcriptItem{
+		kind: transcriptTool,
+		tool: toolEntry{
+			ID:      id,
+			Name:    name,
+			Label:   label,
+			Args:    args,
+			State:   toolRunning,
+			Started: time.Now(),
+		},
+	})
+	m.toolIndex[id] = len(m.entries) - 1
+}
+
+func (m *Model) completeToolEntry(id, output string, err error, started time.Time) {
+	idx, ok := m.toolIndex[id]
+	if !ok {
+		label, args := summarizeToolCall("", nil)
+		m.entries = append(m.entries, transcriptItem{
+			kind: transcriptTool,
+			tool: toolEntry{
+				ID:      id,
+				Label:   label,
+				Args:    args,
+				State:   toolFailed,
+				Started: started,
+			},
+		})
+		idx = len(m.entries) - 1
+	}
+
+	entry := m.entries[idx]
+	entry.tool.Started = started
+	entry.tool.Finished = time.Now()
+	entry.tool.Summary, entry.tool.Preview = summarizeToolResult(entry.tool.Name, output, err)
+	if err != nil {
+		entry.tool.State = toolFailed
+		entry.tool.ErrText = err.Error()
+		if entry.tool.Summary == "" {
+			entry.tool.Summary = err.Error()
+		}
+	} else {
+		entry.tool.State = toolSucceeded
+	}
+	m.entries[idx] = entry
+	delete(m.toolIndex, id)
+}
+
+func (m *Model) SetStatus(model, dir string) {
+	m.modelName = model
+	m.dir = dir
+	m.status = fmt.Sprintf("%s · %s", model, shortenPath(dir))
+}
+
+func (m *Model) advanceSpinnerVerb() {
+	m.verbIndex = (m.verbIndex + 1) % len(spinnerVerbs)
+}
+
+func (m Model) transcriptWidth() int {
+	return min(max(m.width-2, 24), 120)
+}
+
+func (m Model) inputTextWidth() int {
+	return min(max(m.width-6, 20), 112)
+}
+
+// ─── Callback ───────────────────────────────────────────────────
+
 type TUICallback struct {
 	program    *tea.Program
+	mu         sync.Mutex
 	startTimes map[string]time.Time
 }
 
@@ -269,17 +808,21 @@ func (c *TUICallback) OnText(text string) {
 	c.program.Send(responseMsg{chunk: text})
 }
 
-func (c *TUICallback) OnToolStart(name, id string) {
+func (c *TUICallback) OnToolStart(name, id string, input json.RawMessage) {
+	c.mu.Lock()
 	c.startTimes[id] = time.Now()
-	c.program.Send(toolStartMsg{name: name, id: id})
+	c.mu.Unlock()
+	c.program.Send(toolStartMsg{name: name, id: id, input: input})
 }
 
 func (c *TUICallback) OnToolOutput(name, id, output string, err error) {
+	c.mu.Lock()
 	started := c.startTimes[id]
 	if started.IsZero() {
 		started = time.Now()
 	}
 	delete(c.startTimes, id)
+	c.mu.Unlock()
 	c.program.Send(toolDoneMsg{name: name, id: id, output: output, err: err, started: started})
 }
 
@@ -291,35 +834,323 @@ func (c *TUICallback) OnError(err error) {
 	c.program.Send(errMsg{err: err})
 }
 
+// ─── Tool Summary ───────────────────────────────────────────────
+
+func summarizeToolCall(name string, input json.RawMessage) (string, string) {
+	switch name {
+	case "shell":
+		var in struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			return "Bash", previewCommand(in.Command, 120)
+		}
+		return "Bash", ""
+	case "git":
+		var in struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			return "Git", previewCommand(in.Command, 120)
+		}
+		return "Git", ""
+	case "read_file":
+		var in struct {
+			Path   string `json:"path"`
+			Offset int    `json:"offset"`
+			Limit  int    `json:"limit"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			args := shortenPath(in.Path)
+			if in.Offset > 0 && in.Limit > 0 {
+				args += fmt.Sprintf(" · lines %d-%d", in.Offset, in.Offset+in.Limit-1)
+			} else if in.Offset > 0 {
+				args += fmt.Sprintf(" · from line %d", in.Offset)
+			}
+			return "Read", args
+		}
+		return "Read", ""
+	case "write_file":
+		var in struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			return "Write", shortenPath(in.Path)
+		}
+		return "Write", ""
+	case "edit_file":
+		var in struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			return "Edit", shortenPath(in.Path)
+		}
+		return "Edit", ""
+	case "grep":
+		var in struct {
+			Pattern string `json:"pattern"`
+			Path    string `json:"path"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			args := in.Pattern
+			if in.Path != "" {
+				args += " · " + shortenPath(in.Path)
+			}
+			return "Grep", previewCommand(args, 120)
+		}
+		return "Grep", ""
+	case "glob":
+		var in struct {
+			Pattern string `json:"pattern"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			return "Glob", in.Pattern
+		}
+		return "Glob", ""
+	case "web_fetch":
+		var in struct {
+			URL string `json:"url"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			return "WebFetch", in.URL
+		}
+		return "WebFetch", ""
+	case "ask_user":
+		var in struct {
+			Question string `json:"question"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			return "AskUser", previewCommand(in.Question, 120)
+		}
+		return "AskUser", ""
+	default:
+		if name == "" {
+			return "Tool", ""
+		}
+		return humanizeToolName(name), previewCommand(string(input), 120)
+	}
+}
+
+func summarizeToolResult(name, raw string, err error) (string, []string) {
+	if err != nil {
+		if strings.TrimSpace(raw) != "" {
+			return truncateOneLine(raw, 140), nil
+		}
+		return err.Error(), nil
+	}
+
+	switch name {
+	case "shell":
+		var out struct {
+			Output  string `json:"output"`
+			Success bool   `json:"success"`
+			Error   string `json:"error"`
+		}
+		if json.Unmarshal([]byte(raw), &out) == nil {
+			lines := cleanLines(out.Output)
+			summary := ""
+			if len(lines) > 0 {
+				summary = fmt.Sprintf("%d lines", len(lines))
+			} else if out.Success {
+				summary = "Completed"
+			}
+			if out.Error != "" {
+				summary = out.Error
+			}
+			return summary, tailLines(lines, 5)
+		}
+
+	case "read_file":
+		if text, ok := decodeJSONString(raw); ok {
+			if match := readLinesShownRE.FindStringSubmatch(text); len(match) == 3 {
+				return fmt.Sprintf("Read %s of %s lines", match[1], match[2]), nil
+			}
+			lines := cleanLines(text)
+			if len(lines) > 0 {
+				return fmt.Sprintf("Read %d lines", len(lines)), nil
+			}
+			return "Read complete", nil
+		}
+
+	case "web_fetch":
+		var out struct {
+			URL        string `json:"url"`
+			Status     int    `json:"status"`
+			Content    string `json:"content"`
+			ContentLen int    `json:"content_len"`
+		}
+		if json.Unmarshal([]byte(raw), &out) == nil {
+			summary := fmt.Sprintf("Fetched %s", out.URL)
+			if out.ContentLen > 0 {
+				summary += fmt.Sprintf(" · %d chars", out.ContentLen)
+			}
+			return summary, headLines(cleanLines(out.Content), 3)
+		}
+	}
+
+	if text, ok := decodeJSONString(raw); ok {
+		return summarizeTextResult(text)
+	}
+
+	var generic map[string]any
+	if json.Unmarshal([]byte(raw), &generic) == nil {
+		if output, ok := generic["output"].(string); ok {
+			return summarizeTextResult(output)
+		}
+		if content, ok := generic["content"].(string); ok {
+			return summarizeTextResult(content)
+		}
+	}
+
+	return summarizeTextResult(raw)
+}
+
+func summarizeTextResult(text string) (string, []string) {
+	clean := strings.TrimSpace(text)
+	if clean == "" {
+		return "Completed", nil
+	}
+
+	lines := cleanLines(clean)
+	if len(lines) == 0 {
+		return "Completed", nil
+	}
+	if len(lines) == 1 && lipgloss.Width(lines[0]) <= 120 {
+		return lines[0], nil
+	}
+
+	return fmt.Sprintf("%d lines", len(lines)), headLines(lines, 4)
+}
+
+// ─── Helpers ────────────────────────────────────────────────────
+
+func previewCommand(s string, maxWidth int) string {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	s = strings.Join(strings.Fields(s), " ")
+	return truncateOneLine(s, maxWidth)
+}
+
+func decodeJSONString(raw string) (string, bool) {
+	var out string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return "", false
+	}
+	return out, true
+}
+
+func cleanLines(text string) []string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	rawLines := strings.Split(text, "\n")
+	lines := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		line = strings.TrimRight(line, " \t")
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func headLines(lines []string, n int) []string {
+	if len(lines) <= n {
+		return lines
+	}
+	return lines[:n]
+}
+
+func tailLines(lines []string, n int) []string {
+	if len(lines) <= n {
+		return lines
+	}
+	return lines[len(lines)-n:]
+}
+
+func gutterBlock(firstPrefix, nextPrefix, content string) string {
+	content = strings.TrimRight(content, "\n")
+	if content == "" {
+		return ""
+	}
+
+	lines := strings.Split(content, "\n")
+	var b strings.Builder
+	for i, line := range lines {
+		prefix := nextPrefix
+		if i == 0 {
+			prefix = firstPrefix
+		}
+		b.WriteString(prefix)
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderNestedBlock(lines []string, prefix string) string {
+	var b strings.Builder
+	for _, line := range lines {
+		for _, part := range strings.Split(strings.TrimRight(line, "\n"), "\n") {
+			b.WriteString(prefix)
+			b.WriteString(part)
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func humanizeToolName(name string) string {
+	name = strings.ReplaceAll(name, "_", " ")
+	parts := strings.Fields(name)
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, " ")
+}
+
 func formatDuration(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
 	if d < time.Second {
 		return fmt.Sprintf("%dms", d.Milliseconds())
 	}
 	return d.Round(time.Millisecond).String()
 }
 
-func truncate(s string, max int) string {
+func truncateOneLine(s string, max int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.TrimSpace(s)
-	if len(s) <= max {
+	s = strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+	if max <= 0 || len(s) <= max {
 		return s
 	}
-	return s[:max-3] + "..."
+	return s[:max-1] + "…"
 }
 
 func shortenPath(p string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return p
+	if p == "" {
+		return ""
 	}
-	if strings.HasPrefix(p, home) {
-		return "~" + p[len(home):]
+
+	if abs, err := os.UserHomeDir(); err == nil && strings.HasPrefix(p, abs) {
+		return "~" + p[len(abs):]
 	}
 	return p
 }
 
 func min(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

@@ -15,7 +15,7 @@ import (
 // Callback is called by the agent loop to stream events back to the UI.
 type Callback interface {
 	OnText(text string)
-	OnToolStart(name, id string)
+	OnToolStart(name, id string, input json.RawMessage)
 	OnToolOutput(name, id string, output string, err error)
 	OnDone()
 	OnError(err error)
@@ -155,7 +155,7 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 			go func(call provider.ToolCallEvent) {
 				defer wg.Done()
 
-				a.cb.OnToolStart(call.Name, call.ID)
+				a.cb.OnToolStart(call.Name, call.ID, call.Input)
 
 				result, err := a.registry.Execute(ctx, call.Name, call.Input)
 

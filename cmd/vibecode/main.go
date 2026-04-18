@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -300,7 +301,7 @@ type cliCallback struct {
 }
 
 func (c *cliCallback) OnText(text string) { c.buf.WriteString(text) }
-func (c *cliCallback) OnToolStart(name, id string) {
+func (c *cliCallback) OnToolStart(name, id string, input json.RawMessage) {
 	if c.buf.Len() > 0 {
 		fmt.Print(renderMarkdownCLI(c.buf.String()))
 		c.buf.Reset()
