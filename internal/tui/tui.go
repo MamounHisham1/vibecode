@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -66,23 +67,23 @@ type Model struct {
 	theme  Theme
 	input  InputModel
 
-	entries     []transcriptItem
-	streamBuf   *strings.Builder
-	toolIndex   map[string]int
-	status      string
-	modelName   string
-	dir         string
-	quitting    bool
-	waiting     bool
-	welcome     bool
-	width       int
-	height      int
-	blinkOn     bool
-	verbIndex   int
-	frameIndex  int
-	inputChan   chan<- string
-	expanded    map[string]bool
-	ctrlOPress  bool
+	entries   []transcriptItem
+	streamBuf *strings.Builder
+	toolIndex map[string]int
+	status    string
+	modelName string
+	dir       string
+	quitting  bool
+	waiting   bool
+	welcome   bool
+	width     int
+	height    int
+	blinkOn   bool
+	verbIndex int
+	frameIndex int
+	inputChan  chan<- string
+	expanded   map[string]bool
+	ctrlOPress bool
 
 	// Token/cost tracking
 	totalTokens int
@@ -91,6 +92,10 @@ type Model struct {
 	// Session stats
 	sessionStart time.Time
 	turnCount    int
+
+	// Cancellation
+	cancelFunc  context.CancelFunc
+	interruptCh chan struct{}
 }
 
 type transcriptItem struct {
@@ -129,6 +134,7 @@ type toolDoneMsg struct {
 	started time.Time
 }
 
+type interruptMsg struct{}
 type doneMsg struct{}
 type errMsg struct{ err error }
 type tickMsg struct{}
@@ -136,12 +142,12 @@ type blinkMsg struct{}
 
 // ─── Constructor ────────────────────────────────────────────────
 
-func New(inputChan chan<- string) Model {
+func New(inputChan chan<- string) *Model {
 	theme := DefaultTheme()
 	input := NewInputModel(theme)
 	input.SetWidth(80)
 
-	return Model{
+	return &Model{
 		theme:        theme,
 		input:        input,
 		entries:      nil,
@@ -160,10 +166,11 @@ func New(inputChan chan<- string) Model {
 		inputChan:    inputChan,
 		expanded:     make(map[string]bool),
 		sessionStart: time.Now(),
+		interruptCh:  make(chan struct{}),
 	}
 }
 
-func (m Model) Init() tea.Cmd {
+func (m *Model) Init() tea.Cmd {
 	return tea.Batch(tickCmd, blinkCmd)
 }
 
@@ -179,7 +186,7 @@ func blinkCmd() tea.Msg {
 
 // ─── Update ─────────────────────────────────────────────────────
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -192,19 +199,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			if m.waiting {
-				m.finalizeStream()
-				m.appendSystemMessage("Interrupted by user", false)
-				m.waiting = false
-				m.input.SetWaiting(false)
-				m.toolIndex = make(map[string]int)
+				m.interruptAgent()
 				return m, nil
 			}
 			if m.input.IsEmpty() {
 				m.quitting = true
 				return m, tea.Quit
 			}
-			// Non-empty input: let input model handle it
-			m.input.Update(msg)
+			// Non-empty input: clear the input text on first Ctrl+C
+			m.input.SetValue("")
 			return m, nil
 
 		case "ctrl+o":
@@ -251,6 +254,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.blinkOn = !m.blinkOn
 		m.input.SetBlink(m.blinkOn)
 		return m, blinkCmd
+
+	case interruptMsg:
+		m.finalizeStream()
+		m.appendSystemMessage("Interrupted by user", false)
+		m.waiting = false
+		m.input.SetWaiting(false)
+		m.toolIndex = make(map[string]int)
+		return m, nil
 
 	case responseMsg:
 		m.streamBuf.WriteString(msg.chunk)
@@ -307,62 +318,9 @@ func (m *Model) toggleExpandAll() {
 	}
 }
 
-func (m *Model) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
-	switch msg.String() {
-	case "ctrl+c":
-		if m.waiting {
-			m.finalizeStream()
-			m.appendSystemMessage("Interrupted by user", false)
-			m.waiting = false
-			m.input.SetWaiting(false)
-			m.toolIndex = make(map[string]int)
-			return nil
-		}
-		if m.input.IsEmpty() {
-			m.quitting = true
-			return tea.Quit
-		}
-		// Non-empty input: let input model handle it
-		m.input.Update(msg)
-		return nil
-
-	case "ctrl+o":
-		m.toggleExpandAll()
-		return nil
-
-	case "enter":
-		if m.waiting {
-			return nil
-		}
-		raw := m.input.Value()
-		if strings.TrimSpace(raw) == "" {
-			return nil
-		}
-		// Backslash+enter inserts newline
-		if strings.HasSuffix(raw, "\\") {
-			m.input.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'\n'}})
-			return nil
-		}
-		m.appendUserMessage(raw)
-		m.input.Reset()
-		m.waiting = true
-		m.input.SetWaiting(true)
-		m.welcome = false
-		m.turnCount++
-		m.advanceSpinnerVerb()
-		m.inputChan <- raw
-		return nil
-
-	default:
-		// Route all other key events (space, letters, etc.) to input
-		m.input.Update(msg)
-		return nil
-	}
-}
-
 // ─── View ───────────────────────────────────────────────────────
 
-func (m Model) View() string {
+func (m *Model) View() string {
 	if m.quitting {
 		return ""
 	}
@@ -465,7 +423,7 @@ func countWrappedLines(s string, width int) int {
 	return count
 }
 
-func (m Model) renderStatusBar() string {
+func (m *Model) renderStatusBar() string {
 	t := m.theme
 	width := m.width
 
@@ -509,7 +467,7 @@ func (m Model) renderStatusBar() string {
 	return bar
 }
 
-func (m Model) renderTranscript() string {
+func (m *Model) renderTranscript() string {
 	var b strings.Builder
 
 	for i, entry := range m.entries {
@@ -538,13 +496,13 @@ func (m Model) renderTranscript() string {
 	return b.String()
 }
 
-func (m Model) renderInputArea() string {
+func (m *Model) renderInputArea() string {
 	return m.input.View()
 }
 
 // ─── Entry Renderers ────────────────────────────────────────────
 
-func (m Model) renderEntry(entry transcriptItem) string {
+func (m *Model) renderEntry(entry transcriptItem) string {
 	switch entry.kind {
 	case transcriptUser:
 		return m.renderUserEntry(entry.text)
@@ -559,7 +517,7 @@ func (m Model) renderEntry(entry transcriptItem) string {
 	}
 }
 
-func (m Model) renderUserEntry(text string) string {
+func (m *Model) renderUserEntry(text string) string {
 	t := m.theme
 	w := max(20, m.transcriptWidth()-4)
 	wrapped := wordwrap.String(strings.TrimRight(text, "\n"), w)
@@ -568,7 +526,7 @@ func (m Model) renderUserEntry(text string) string {
 	return prefix + t.UserText.Render(wrapped)
 }
 
-func (m Model) renderAssistantEntry(text string) string {
+func (m *Model) renderAssistantEntry(text string) string {
 	t := m.theme
 	dot := t.AssistantDot.Render(assistantDot + " ")
 	return gutterBlock(
@@ -578,7 +536,7 @@ func (m Model) renderAssistantEntry(text string) string {
 	)
 }
 
-func (m Model) renderToolEntry(tool toolEntry) string {
+func (m *Model) renderToolEntry(tool toolEntry) string {
 	var b strings.Builder
 	b.WriteString(m.renderToolHeadline(tool))
 
@@ -645,7 +603,7 @@ func (m Model) renderToolEntry(tool toolEntry) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func (m Model) renderToolHeadline(tool toolEntry) string {
+func (m *Model) renderToolHeadline(tool toolEntry) string {
 	t := m.theme
 
 	// Icon based on tool type
@@ -679,7 +637,7 @@ func (m Model) renderToolHeadline(tool toolEntry) string {
 	return line
 }
 
-func (m Model) renderSystemEntry(text string, isError bool) string {
+func (m *Model) renderSystemEntry(text string, isError bool) string {
 	style := m.theme.Dim
 	if isError {
 		style = m.theme.Error
@@ -694,7 +652,7 @@ func (m Model) renderSystemEntry(text string, isError bool) string {
 	)
 }
 
-func (m Model) renderThinkingState() string {
+func (m *Model) renderThinkingState() string {
 	t := m.theme
 	frame := spinnerFrames[m.frameIndex%len(spinnerFrames)]
 	verb := spinnerVerbs[m.verbIndex%len(spinnerVerbs)]
@@ -706,7 +664,7 @@ func (m Model) renderThinkingState() string {
 	return spinner + " " + label + dots
 }
 
-func (m Model) renderWelcome() string {
+func (m *Model) renderWelcome() string {
 	t := m.theme
 	var b strings.Builder
 
@@ -857,11 +815,41 @@ func (m *Model) advanceSpinnerVerb() {
 	m.verbIndex = (m.verbIndex + 1) % len(spinnerVerbs)
 }
 
-func (m Model) transcriptWidth() int {
+// interruptAgent cancels the running agent goroutine and waits for it to finish.
+func (m *Model) interruptAgent() {
+	// Cancel the context to stop the LLM stream and tool execution
+	if m.cancelFunc != nil {
+		m.cancelFunc()
+	}
+
+	// Wait for the agent goroutine to acknowledge the interruption.
+	// We use a short timeout to avoid blocking the UI.
+	select {
+	case <-m.interruptCh:
+		// Agent acknowledged interruption
+	case <-time.After(2 * time.Second):
+		// Timeout — force the UI state anyway
+	}
+
+	// Update UI state directly since the agent goroutine may not
+	// send the proper done/error messages if it was forcefully cancelled.
+	m.finalizeStream()
+	m.appendSystemMessage("Interrupted by user", false)
+	m.waiting = false
+	m.input.SetWaiting(false)
+	m.toolIndex = make(map[string]int)
+}
+
+// SetCancelFunc sets the context cancel function used to interrupt the agent.
+func (m *Model) SetCancelFunc(fn context.CancelFunc) {
+	m.cancelFunc = fn
+}
+
+func (m *Model) transcriptWidth() int {
 	return min(max(m.width-2, 24), 120)
 }
 
-func (m Model) inputTextWidth() int {
+func (m *Model) inputTextWidth() int {
 	return min(max(m.width-6, 20), 112)
 }
 
