@@ -31,7 +31,7 @@ func Default() *Config {
 	}
 }
 
-func configPath() (string, error) {
+func ConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -40,7 +40,7 @@ func configPath() (string, error) {
 }
 
 func Load() (*Config, error) {
-	path, err := configPath()
+	path, err := ConfigPath()
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) Save() error {
-	path, err := configPath()
+	path, err := ConfigPath()
 	if err != nil {
 		return err
 	}

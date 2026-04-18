@@ -39,7 +39,7 @@ func main() {
 		RunE:  run,
 	}
 
-	rootCmd.Flags().StringVar(&flagProvider, "provider", "", "LLM provider (anthropic, openai, ollama, zhipu)")
+	rootCmd.Flags().StringVar(&flagProvider, "provider", "", "LLM provider (anthropic, openai, deepseek, kimi, moonshot, zhipu, qwen, ollama)")
 	rootCmd.Flags().StringVar(&flagModel, "model", "", "Model name to use")
 
 	if err := rootCmd.Execute(); err != nil {
@@ -51,6 +51,33 @@ func run(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	// Check if this is a fresh install — no provider or API key configured.
+	// Skip setup if flags are explicitly provided or if using env vars.
+	needsSetup := !configFileExists() &&
+		flagProvider == "" && flagModel == "" &&
+		os.Getenv("ANTHROPIC_API_KEY") == "" &&
+		os.Getenv("OPENAI_API_KEY") == "" &&
+		os.Getenv("VIBECODE_PROVIDER") == ""
+
+	if needsSetup && len(args) == 0 {
+		setupCfg, err := tui.RunSetup()
+		if err != nil {
+			return fmt.Errorf("setup: %w", err)
+		}
+		cfg.Provider = setupCfg.Provider.ID
+		cfg.Model = setupCfg.Model.ID
+		cfg.BaseURL = setupCfg.Provider.BaseURL
+		if setupCfg.APIKey != "" {
+			if cfg.APIKeys == nil {
+				cfg.APIKeys = make(map[string]string)
+			}
+			cfg.APIKeys[setupCfg.Provider.ID] = setupCfg.APIKey
+		}
+		if err := cfg.Save(); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
 	}
 
 	if flagProvider != "" {
@@ -78,6 +105,15 @@ func run(cmd *cobra.Command, args []string) error {
 	return runInteractive(p, reg, system, cfg, dir)
 }
 
+func configFileExists() bool {
+	path, err := config.ConfigPath()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
+
 func buildToolRegistry() *tool.Registry {
 	reg := tool.NewRegistry()
 	reg.Register(tool.ReadFile{})
@@ -94,10 +130,10 @@ func buildToolRegistry() *tool.Registry {
 
 func buildProvider(cfg *config.Config) (provider.Provider, error) {
 	switch cfg.Provider {
-	case "anthropic", "zhipu":
+	case "anthropic":
 		key := cfg.APIKey("anthropic")
 		if key == "" {
-			return nil, fmt.Errorf("set ANTHROPIC_API_KEY or add api_keys.anthropic to ~/.vibecode/config.json")
+			return nil, fmt.Errorf("set ANTHROPIC_API_KEY or run 'vibecode' to configure")
 		}
 		model := cfg.Model
 		if model == "" {
@@ -111,7 +147,7 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 	case "openai":
 		key := cfg.APIKey("openai")
 		if key == "" {
-			return nil, fmt.Errorf("set OPENAI_API_KEY or add api_keys.openai to ~/.vibecode/config.json")
+			return nil, fmt.Errorf("set OPENAI_API_KEY or run 'vibecode' to configure")
 		}
 		model := cfg.Model
 		if model == "" {
@@ -122,6 +158,66 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 		}
 		return provider.NewOpenAI(key, model), nil
 
+	case "deepseek":
+		key := cfg.APIKey("deepseek")
+		if key == "" {
+			return nil, fmt.Errorf("run 'vibecode' to configure your DeepSeek API key")
+		}
+		model := cfg.Model
+		if model == "" {
+			model = "deepseek-chat"
+		}
+		baseURL := "https://api.deepseek.com/v1/chat/completions"
+		if cfg.BaseURL != "" {
+			baseURL = cfg.BaseURL
+		}
+		return provider.NewOpenAIWithBaseURL(key, model, baseURL), nil
+
+	case "kimi", "moonshot":
+		key := cfg.APIKey(cfg.Provider)
+		if key == "" {
+			return nil, fmt.Errorf("run 'vibecode' to configure your %s API key", cfg.Provider)
+		}
+		model := cfg.Model
+		if model == "" {
+			model = "moonshot-v1-8k"
+		}
+		baseURL := "https://api.moonshot.cn/v1/chat/completions"
+		if cfg.BaseURL != "" {
+			baseURL = cfg.BaseURL
+		}
+		return provider.NewOpenAIWithBaseURL(key, model, baseURL), nil
+
+	case "zhipu":
+		key := cfg.APIKey("zhipu")
+		if key == "" {
+			return nil, fmt.Errorf("run 'vibecode' to configure your Zhipu AI API key")
+		}
+		model := cfg.Model
+		if model == "" {
+			model = "glm-4-flash"
+		}
+		baseURL := "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+		if cfg.BaseURL != "" {
+			baseURL = cfg.BaseURL
+		}
+		return provider.NewOpenAIWithBaseURL(key, model, baseURL), nil
+
+	case "qwen":
+		key := cfg.APIKey("qwen")
+		if key == "" {
+			return nil, fmt.Errorf("run 'vibecode' to configure your Qwen API key")
+		}
+		model := cfg.Model
+		if model == "" {
+			model = "qwen-turbo"
+		}
+		baseURL := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+		if cfg.BaseURL != "" {
+			baseURL = cfg.BaseURL
+		}
+		return provider.NewOpenAIWithBaseURL(key, model, baseURL), nil
+
 	case "ollama":
 		model := cfg.Model
 		if model == "" {
@@ -131,7 +227,7 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 		return provider.NewOllama(model, baseURL), nil
 
 	default:
-		return nil, fmt.Errorf("unsupported provider: %s (supported: anthropic, openai, ollama, zhipu)", cfg.Provider)
+		return nil, fmt.Errorf("unsupported provider: %s\nRun 'vibecode' to configure a provider", cfg.Provider)
 	}
 }
 
