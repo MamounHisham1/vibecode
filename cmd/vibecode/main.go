@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 	"github.com/vibecode/vibecode/internal/agent"
 	"github.com/vibecode/vibecode/internal/hooks"
 	"github.com/vibecode/vibecode/internal/provider"
+	"github.com/vibecode/vibecode/internal/skills"
 	"github.com/vibecode/vibecode/internal/tool"
 	"github.com/vibecode/vibecode/internal/tui"
 )
@@ -98,6 +100,12 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	system := buildSystemPrompt(dir)
+
+	// Load skills and append their prompts to system
+	skillStore := loadSkills(dir)
+	for name, skill := range skillStore.All() {
+		system += fmt.Sprintf("\n\n--- Skill: %s ---\n%s", name, skill.Prompt)
+	}
 
 	if len(args) == 1 {
 		return runOneShot(args[0], p, reg, system, cfg)
@@ -283,6 +291,15 @@ Rules:
 `)
 
 	return b.String()
+}
+
+// loadSkills discovers and loads skills from .vibecode/skills/ directories.
+func loadSkills(dir string) *skills.Store {
+	store := skills.NewStore()
+	if err := store.Load(dir); err == nil && len(store.All()) > 0 {
+		log.Printf("Loaded %d skills from %v", len(store.All()), store.Dirs())
+	}
+	return store
 }
 
 func getGitContext(dir string) string {
