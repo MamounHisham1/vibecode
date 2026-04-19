@@ -146,7 +146,7 @@ IMPORTANT: Please read the refrence at @../../sites/cluade-code, this is the ai 
   - Priority: local > project > user > defaults
   - File: `config/config.go`
 
-- [ ] **VIBECODE.md auto-discovery** — Walk from CWD up to home loading VIBECODE.md files
+- [x] **VIBECODE.md auto-discovery** — Walk from CWD up to home loading VIBECODE.md files
   - Already partially implemented in main.go
   - Also load `.vibecode/rules/*.md` files
   - File: `cmd/vibecode/main.go`
