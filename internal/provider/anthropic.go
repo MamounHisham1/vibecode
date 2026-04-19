@@ -216,6 +216,9 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 	var curToolID string
 	var curToolInput strings.Builder
 
+	// Track usage sent via events to avoid double-counting
+	var usageSent bool
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -233,19 +236,26 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 			log.Printf("SSE: %s\n", data)
 		}
 
-		var sse anthropicSSE
-		if err := json.Unmarshal([]byte(data), &sse); err != nil {
+		// Parse into a raw map first for robust usage extraction
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(data), &raw); err != nil {
 			ch <- ErrorEvent{Err: fmt.Errorf("parse SSE: %w", err)}
 			return
 		}
 
-		switch sse.Type {
+		var sseType string
+		if t, ok := raw["type"]; ok {
+			json.Unmarshal(t, &sseType)
+		}
+
+		switch sseType {
 		case "content_block_start":
+			var sse anthropicSSE
+			json.Unmarshal([]byte(data), &sse)
 			curBlockType = sse.ContentBlock.Type
 			if curBlockType == "tool_use" {
 				curToolID = sse.ContentBlock.ID
 				curToolInput.Reset()
-				// Emit tool call with name; input will follow via deltas
 				ch <- ToolCallEvent{
 					ID:   curToolID,
 					Name: sse.ContentBlock.Name,
@@ -253,27 +263,27 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 			}
 
 		case "content_block_delta":
+			var sse anthropicSSE
+			json.Unmarshal([]byte(data), &sse)
 			var delta anthropicDelta
 			if err := json.Unmarshal(sse.Delta, &delta); err == nil {
 				switch delta.Type {
 				case "text_delta":
 					ch <- TextEvent{Text: delta.Text}
 				case "input_json_delta":
-					// Accumulate into tool input buffer
 					curToolInput.WriteString(delta.PartialJSON)
 				}
 			}
 
 		case "content_block_stop":
 			if curBlockType == "tool_use" && curToolID != "" {
-				// Emit the complete tool call input
 				input := json.RawMessage(curToolInput.String())
 				if len(input) == 0 {
 					input = json.RawMessage("{}")
 				}
 				ch <- ToolCallEvent{
 					ID:    curToolID,
-					Name:  "", // already sent in content_block_start
+					Name:  "",
 					Input: input,
 				}
 				curToolID = ""
@@ -282,17 +292,23 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 			curBlockType = ""
 
 		case "message_start":
-			if sse.Message.Usage.InputTokens > 0 || sse.Message.Usage.OutputTokens > 0 {
+			// Try multiple locations for usage data
+			inputTokens, outputTokens := extractUsageFromRaw(raw)
+			if inputTokens > 0 || outputTokens > 0 {
+				usageSent = true
 				ch <- UsageEvent{
-					InputTokens:  sse.Message.Usage.InputTokens,
-					OutputTokens: sse.Message.Usage.OutputTokens,
+					InputTokens:  inputTokens,
+					OutputTokens: outputTokens,
 				}
 			}
 
 		case "message_delta":
-			if sse.Usage.OutputTokens > 0 {
+			// message_delta has usage at top level: {"type":"message_delta","usage":{"output_tokens":N}}
+			outputTokens := extractOutputTokensFromDelta(raw)
+			if outputTokens > 0 {
+				usageSent = true
 				ch <- UsageEvent{
-					OutputTokens: sse.Usage.OutputTokens,
+					OutputTokens: outputTokens,
 				}
 			}
 
@@ -306,10 +322,73 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 		case "error":
 			ch <- ErrorEvent{Err: fmt.Errorf("stream error: %s", data)}
 			return
+
+		default:
+			// Unknown event type — try to extract usage from it
+			// Some proxies send usage in non-standard events
+			if !usageSent {
+				if inT, outT := extractUsageFromRaw(raw); inT > 0 || outT > 0 {
+					usageSent = true
+					ch <- UsageEvent{
+						InputTokens:  inT,
+						OutputTokens: outT,
+					}
+				}
+			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		ch <- ErrorEvent{Err: fmt.Errorf("read stream: %w", err)}
 	}
+}
+
+// extractUsageFromRaw tries multiple JSON paths to find usage token counts.
+// Standard Anthropic: {"message":{"usage":{"input_tokens":N,"output_tokens":N}}}
+// Some proxies: {"usage":{"input_tokens":N,"output_tokens":N}} at top level
+func extractUsageFromRaw(raw map[string]json.RawMessage) (inputTokens, outputTokens int) {
+	// Try message.usage.input_tokens / message.usage.output_tokens
+	if msgRaw, ok := raw["message"]; ok {
+		var msg struct {
+			Usage struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal(msgRaw, &msg) == nil {
+			inputTokens = msg.Usage.InputTokens
+			outputTokens = msg.Usage.OutputTokens
+		}
+	}
+
+	// Try top-level usage.input_tokens / usage.output_tokens
+	if usageRaw, ok := raw["usage"]; ok && (inputTokens == 0 && outputTokens == 0) {
+		var usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		}
+		if json.Unmarshal(usageRaw, &usage) == nil {
+			if usage.InputTokens > 0 {
+				inputTokens = usage.InputTokens
+			}
+			if usage.OutputTokens > 0 {
+				outputTokens = usage.OutputTokens
+			}
+		}
+	}
+
+	return inputTokens, outputTokens
+}
+
+// extractOutputTokensFromDelta parses output_tokens from message_delta's usage field.
+func extractOutputTokensFromDelta(raw map[string]json.RawMessage) int {
+	if usageRaw, ok := raw["usage"]; ok {
+		var usage struct {
+			OutputTokens int `json:"output_tokens"`
+		}
+		if json.Unmarshal(usageRaw, &usage) == nil {
+			return usage.OutputTokens
+		}
+	}
+	return 0
 }

@@ -22,6 +22,7 @@ type Callback interface {
 	OnError(err error)
 	OnCompact(summary string)
 	OnUsage(inputTokens, outputTokens int)
+	OnEstimatedUsage(inputTokens, outputTokens int)
 }
 
 // TokenTracker accumulates token counts from provider responses.
@@ -353,7 +354,7 @@ func (a *Agent) estimateAndReportTokens(req provider.Request, responseText strin
 	a.mu.Lock()
 	a.tokens.Add(inputEst, outputEst)
 	a.mu.Unlock()
-	a.cb.OnUsage(inputEst, outputEst)
+	a.cb.OnEstimatedUsage(inputEst, outputEst)
 }
 
 func (a *Agent) buildToolDefs() []provider.ToolDef {

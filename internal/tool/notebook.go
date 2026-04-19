@@ -63,10 +63,10 @@ type notebookCell struct {
 }
 
 type notebookFile struct {
-	Cells   []notebookCell `json:"cells"`
-	Metadata any           `json:"metadata,omitempty"`
-	NBFormat int            `json:"nbformat"`
-	NBFormatMinor int       `json:"nbformat_minor"`
+	Cells         []notebookCell `json:"cells"`
+	Metadata      any            `json:"metadata,omitempty"`
+	NBFormat      int            `json:"nbformat"`
+	NBFormatMinor int            `json:"nbformat_minor"`
 }
 
 func (n NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -135,9 +135,9 @@ func (n NotebookEdit) readNotebook(in notebookInput) (json.RawMessage, error) {
 	}
 
 	return json.Marshal(map[string]any{
-		"path":   in.Path,
-		"cells":  summaries,
-		"total":  len(nb.Cells),
+		"path":  in.Path,
+		"cells": summaries,
+		"total": len(nb.Cells),
 	})
 }
 

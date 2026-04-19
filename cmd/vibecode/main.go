@@ -519,7 +519,8 @@ func (c *cliCallback) OnCompact(summary string) {
 	}
 	fmt.Println("ℹ Conversation compacted")
 }
-func (c *cliCallback) OnUsage(inputTokens, outputTokens int) {}
+func (c *cliCallback) OnUsage(inputTokens, outputTokens int)          {}
+func (c *cliCallback) OnEstimatedUsage(inputTokens, outputTokens int) {}
 
 // effectiveContextWindow returns the context window size for the configured model.
 // Falls back to defaults per provider if not explicitly set.

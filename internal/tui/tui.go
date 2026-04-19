@@ -86,8 +86,9 @@ type Model struct {
 	ctrlOPress   bool
 
 	// Token/cost tracking
-	totalTokens int
-	lastTokens  int
+	totalTokens     int
+	lastTokens      int
+	tokensEstimated bool
 
 	// Session stats
 	sessionStart time.Time
@@ -147,6 +148,7 @@ type compactMsg struct{}
 type usageMsg struct {
 	inputTokens  int
 	outputTokens int
+	estimated    bool
 }
 
 // ─── Constructor ────────────────────────────────────────────────
@@ -499,7 +501,7 @@ func (m *Model) renderStatusBar() string {
 	elapsed := time.Since(m.sessionStart).Round(time.Second)
 	right := ""
 	if m.totalTokens > 0 {
-		right += t.StatusBarDim.Render(formatTokenCount(m.totalTokens))
+		right += t.StatusBarDim.Render(formatTokenCount(m.totalTokens, m.tokensEstimated))
 		right += t.StatusBarDim.Render(" · ")
 	}
 	if m.turnCount > 0 {
@@ -1031,6 +1033,10 @@ func (c *TUICallback) OnUsage(inputTokens, outputTokens int) {
 	c.program.Send(usageMsg{inputTokens: inputTokens, outputTokens: outputTokens})
 }
 
+func (c *TUICallback) OnEstimatedUsage(inputTokens, outputTokens int) {
+	c.program.Send(usageMsg{inputTokens: inputTokens, outputTokens: outputTokens, estimated: true})
+}
+
 // ─── Tool Summary ───────────────────────────────────────────────
 
 func summarizeToolCall(name string, input json.RawMessage) (string, string) {
@@ -1309,11 +1315,15 @@ func humanizeToolName(name string) string {
 	return strings.Join(parts, " ")
 }
 
-func formatTokenCount(n int) string {
-	if n >= 1000 {
-		return fmt.Sprintf("%dk tokens", n/1000)
+func formatTokenCount(n int, estimated bool) string {
+	label := "tokens"
+	if estimated {
+		label = "tokens (est.)"
 	}
-	return fmt.Sprintf("%d tokens", n)
+	if n >= 1000 {
+		return fmt.Sprintf("%dk %s", n/1000, label)
+	}
+	return fmt.Sprintf("%d %s", n, label)
 }
 
 func formatDuration(d time.Duration) string {

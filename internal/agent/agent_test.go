@@ -87,6 +87,12 @@ func (c *mockCallback) OnUsage(inputTokens, outputTokens int) {
 	c.mu.Unlock()
 }
 
+func (c *mockCallback) OnEstimatedUsage(inputTokens, outputTokens int) {
+	c.mu.Lock()
+	c.usages = append(c.usages, usageRecord{input: inputTokens, output: outputTokens})
+	c.mu.Unlock()
+}
+
 // mockTool implements tool.Tool for testing.
 type mockTool struct {
 	toolName string
