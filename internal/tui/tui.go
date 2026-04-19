@@ -78,6 +78,7 @@ type Model struct {
 	width     int
 	height    int
 	blinkOn   bool
+	scrollOffset int // lines scrolled up from bottom (0 = pinned)
 	verbIndex int
 	frameIndex int
 	inputChan  chan<- string
@@ -190,6 +191,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "shift+up", "pgup":
+			m.scrollOffset += 10
+			return m, nil
+		case "shift+down", "pgdown":
+			m.scrollOffset -= 10
+			if m.scrollOffset < 0 {
+				m.scrollOffset = 0
+			}
+			return m, nil
 		case "ctrl+c":
 			if m.waiting {
 				m.interruptAgent()
@@ -222,6 +232,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.appendUserMessage(raw)
 			m.input.Reset()
+			m.scrollOffset = 0
 			m.waiting = true
 			m.input.SetWaiting(true)
 			m.welcome = false
@@ -244,6 +255,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tickCmd
 		}
 		return m, tickCmd // keep ticking so cursor never disappears
+
+	case tea.MouseMsg:
+		if msg.Type == tea.MouseWheelUp {
+			m.scrollOffset += 3
+		} else if msg.Type == tea.MouseWheelDown {
+			m.scrollOffset -= 3
+			if m.scrollOffset < 0 {
+				m.scrollOffset = 0
+			}
+		}
+		return m, nil
 
 	case interruptMsg:
 		m.finalizeStream()
@@ -335,8 +357,7 @@ func (m *Model) View() string {
 		b.WriteString(m.renderWelcome())
 	}
 
-	// Transcript — render all content, no truncation.
-	// The alt screen buffer lets the terminal handle scrolling naturally.
+	// Transcript
 	content := m.renderTranscript()
 	if content != "" {
 		b.WriteString("\n" + content)
@@ -346,7 +367,35 @@ func (m *Model) View() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.renderInputArea())
 
-	return b.String()
+	fullView := b.String()
+
+	// Viewport: fit into terminal height.
+	// scrollOffset lets the user scroll up to see earlier messages.
+	viewportHeight := m.height - 1
+	if viewportHeight < 3 {
+		viewportHeight = 3
+	}
+
+	totalLines := countWrappedLines(fullView, m.width)
+	if totalLines <= viewportHeight {
+		m.scrollOffset = 0
+		return fullView
+	}
+
+	// Clamp scroll offset
+	maxScroll := totalLines - viewportHeight
+	if m.scrollOffset > maxScroll {
+		m.scrollOffset = maxScroll
+	}
+
+	rawLines := strings.Split(fullView, "\n")
+	endIdx := len(rawLines) - m.scrollOffset
+	startIdx := endIdx - viewportHeight
+	if startIdx < 0 {
+		startIdx = 0
+	}
+
+	return strings.Join(rawLines[startIdx:endIdx], "\n")
 }
 
 // countWrappedLines counts the visual lines a string will occupy,
