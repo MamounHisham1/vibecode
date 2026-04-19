@@ -60,6 +60,17 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
+	// Apply layered settings: user → project → local
+	settingsPaths := settingsFilePaths(".")
+	for _, sp := range settingsPaths {
+		if sd, err := os.ReadFile(sp); err == nil {
+			var s Settings
+			if json.Unmarshal(sd, &s) == nil {
+				mergeSettings(cfg, &s)
+			}
+		}
+	}
+
 	// Env overrides
 	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
 		cfg.APIKeys["anthropic"] = v
@@ -107,4 +118,83 @@ func (c *Config) APIKey(provider string) string {
 		return ""
 	}
 	return c.APIKeys[provider]
+}
+
+// ─── Settings Layer ────────────────────────────────────────────
+
+// Settings is a partial config that can be layered on top of the base config.
+// Only non-zero fields are applied.
+type Settings struct {
+	Provider      string                     `json:"provider,omitempty"`
+	Model         string                     `json:"model,omitempty"`
+	BaseURL       string                     `json:"base_url,omitempty"`
+	APIKeys       map[string]string          `json:"api_keys,omitempty"`
+	AutoApprove   []string                   `json:"auto_approve,omitempty"`
+	MaxIterations int                        `json:"max_iterations,omitempty"`
+	Theme         string                     `json:"theme,omitempty"`
+	ContextWindow int                        `json:"context_window,omitempty"`
+	Hooks         map[string]json.RawMessage `json:"hooks,omitempty"`
+}
+
+// settingsFilePaths returns settings file paths in priority order (low to high).
+// Priority: user < project < local
+func settingsFilePaths(cwd string) []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+
+	var paths []string
+
+	// User-level settings
+	paths = append(paths, filepath.Join(home, ".vibecode", "settings.json"))
+
+	// Project-level settings
+	paths = append(paths, filepath.Join(cwd, ".vibecode", "settings.json"))
+
+	// Local (gitignored) settings — highest priority
+	paths = append(paths, filepath.Join(cwd, ".vibecode", "settings.local.json"))
+
+	return paths
+}
+
+// mergeSettings overlays non-zero settings fields onto the config.
+func mergeSettings(cfg *Config, s *Settings) {
+	if s.Provider != "" {
+		cfg.Provider = s.Provider
+	}
+	if s.Model != "" {
+		cfg.Model = s.Model
+	}
+	if s.BaseURL != "" {
+		cfg.BaseURL = s.BaseURL
+	}
+	if len(s.APIKeys) > 0 {
+		if cfg.APIKeys == nil {
+			cfg.APIKeys = make(map[string]string)
+		}
+		for k, v := range s.APIKeys {
+			cfg.APIKeys[k] = v
+		}
+	}
+	if len(s.AutoApprove) > 0 {
+		cfg.AutoApprove = s.AutoApprove
+	}
+	if s.MaxIterations > 0 {
+		cfg.MaxIterations = s.MaxIterations
+	}
+	if s.Theme != "" {
+		cfg.Theme = s.Theme
+	}
+	if s.ContextWindow > 0 {
+		cfg.ContextWindow = s.ContextWindow
+	}
+	if len(s.Hooks) > 0 {
+		if cfg.Hooks == nil {
+			cfg.Hooks = make(map[string]json.RawMessage)
+		}
+		for k, v := range s.Hooks {
+			cfg.Hooks[k] = v
+		}
+	}
 }

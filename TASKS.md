@@ -139,7 +139,7 @@ IMPORTANT: Please read the refrence at @../../sites/cluade-code, this is the ai 
   - Validate values
   - File: new cobra subcommand in `cmd/vibecode/main.go`
 
-- [ ] **Multiple settings sources** — Load from user, project, and local settings files with merge
+- [x] **Multiple settings sources** — Load from user, project, and local settings files with merge
   - `~/.vibecode/settings.json` (user)
   - `.vibecode/settings.json` (project)
   - `.vibecode/settings.local.json` (local, gitignored)
