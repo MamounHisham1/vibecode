@@ -195,10 +195,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scrollOffset += 10
 			return m, nil
 		case "shift+down", "pgdown":
-			m.scrollOffset -= 10
-			if m.scrollOffset < 0 {
-				m.scrollOffset = 0
-			}
+			m.scrollOffset = 0
 			return m, nil
 		case "ctrl+c":
 			if m.waiting {
@@ -260,8 +257,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.MouseWheelUp {
 			m.scrollOffset += 3
 		} else if msg.Type == tea.MouseWheelDown {
-			m.scrollOffset -= 3
-			if m.scrollOffset < 0 {
+			if m.scrollOffset > 3 {
+				m.scrollOffset -= 3
+			} else {
 				m.scrollOffset = 0
 			}
 		}
@@ -384,15 +382,22 @@ func (m *Model) View() string {
 
 	// Clamp scroll offset
 	maxScroll := totalLines - viewportHeight
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
 	if m.scrollOffset > maxScroll {
 		m.scrollOffset = maxScroll
 	}
 
 	rawLines := strings.Split(fullView, "\n")
+	// Show the bottom viewportHeight lines, shifted up by scrollOffset
 	endIdx := len(rawLines) - m.scrollOffset
 	startIdx := endIdx - viewportHeight
 	if startIdx < 0 {
 		startIdx = 0
+	}
+	if endIdx > len(rawLines) {
+		endIdx = len(rawLines)
 	}
 
 	return strings.Join(rawLines[startIdx:endIdx], "\n")
