@@ -106,6 +106,9 @@ type Model struct {
 	askQuestion string
 	askOptions  []string
 	askAnswer   chan string
+
+	// Per-tool expand/collapse: maps tool ID to its start line in the rendered view
+	toolStartLines map[string]int
 }
 
 type transcriptItem struct {
@@ -307,6 +310,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.scrollOffset = 0
 			}
+		} else if msg.Type == tea.MouseLeft {
+			// Click on a tool entry to toggle expand/collapse
+			m.toggleToolAtLine(msg.Y)
 		}
 		return m, nil
 
@@ -399,6 +405,31 @@ func (m *Model) toggleExpandAll() {
 			} else {
 				delete(m.expanded, entry.tool.ID)
 			}
+		}
+	}
+}
+
+// toggleToolAtLine toggles expand/collapse for the tool entry at the given screen line.
+func (m *Model) toggleToolAtLine(y int) {
+	if m.toolStartLines == nil {
+		return
+	}
+
+	// Find which tool entry this line falls within
+	var bestID string
+	var bestLine int
+	for id, line := range m.toolStartLines {
+		if line <= y && line > bestLine {
+			bestID = id
+			bestLine = line
+		}
+	}
+
+	if bestID != "" {
+		if m.expanded[bestID] {
+			delete(m.expanded, bestID)
+		} else {
+			m.expanded[bestID] = true
 		}
 	}
 }
@@ -677,13 +708,13 @@ func (m *Model) renderToolEntry(tool toolEntry) string {
 				b.WriteString(renderNestedBlock(showLines, m.theme.Subtle.Render("  "+toolPointer+"  ")))
 				if len(tool.Preview) > maxShow {
 					b.WriteString(renderNestedBlock(
-						[]string{m.theme.Dim.Render(fmt.Sprintf("ctrl+o to expand (%d more lines)", len(tool.Preview)-maxShow))},
+						[]string{m.theme.Dim.Render(fmt.Sprintf("click or ctrl+o to expand (%d more lines)", len(tool.Preview)-maxShow))},
 						m.theme.Subtle.Render("  "+toolPointer+"  "),
 					))
 				}
 			} else {
 				b.WriteString(renderNestedBlock(
-					[]string{m.theme.Dim.Render("ctrl+o to expand")},
+					[]string{m.theme.Dim.Render("click or ctrl+o to expand")},
 					m.theme.Subtle.Render("  "+toolPointer+"  "),
 				))
 			}

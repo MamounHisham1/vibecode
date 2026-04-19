@@ -111,7 +111,7 @@ IMPORTANT: Please read the refrence at @../../sites/cluade-code, this is the ai 
   - File: `internal/tool/registry.go`
 
 ### TUI Improvements
-- [ ] **Tool output expand/collapse per-tool** — Currently ctrl+O toggles all. Add per-tool expand/collapse
+- [x] **Tool output expand/collapse per-tool** — Currently ctrl+O toggles all. Add per-tool expand/collapse
   - Click or keyboard shortcut to expand/collapse individual tool results
   - Remember expanded state
   - File: `internal/tui/tui.go`
