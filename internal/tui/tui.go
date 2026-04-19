@@ -345,40 +345,40 @@ func (m *Model) View() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.renderInputArea())
 
-	// Viewport management: ensure content fits within terminal height.
-	// When the conversation is long, we truncate old messages from the top
-	// so the latest messages and the input area are always visible.
-	// The input area stays pinned to the bottom of the screen.
+	// Viewport management.
+	// When idle (not streaming): show full conversation so the user can read
+	// everything. The input area may scroll off the bottom, which is fine —
+	// the user can scroll their terminal.
+	// When streaming/waiting: truncate to keep the spinner + input visible.
 	fullView := b.String()
-	viewportHeight := m.height - 1 // 1 row for status bar
 
+	if !m.waiting && len(m.toolIndex) == 0 {
+		return fullView
+	}
+
+	viewportHeight := m.height - 1
 	if viewportHeight < 3 {
 		viewportHeight = 3
 	}
 
-	// Count visual lines of the full view, accounting for wrapping
 	totalLines := countWrappedLines(fullView, m.width)
-
 	if totalLines <= viewportHeight {
-		// Everything fits — no truncation needed
 		return fullView
 	}
 
-	// We need to trim from the top. Approach:
-	// 1. Split into lines
-	// 2. Calculate how many lines to keep from the bottom
-	// 3. Find the earliest complete message boundary we can show
-	// 4. Show from that boundary to the end
+	// Only truncate during active streaming to keep input area visible.
+	// Reserve space for: status bar (1) + input area (~3) = 4 lines minimum for input
+	inputReserve := 4
+	keepLines := viewportHeight - inputReserve
+	if keepLines < viewportHeight/2 {
+		keepLines = viewportHeight / 2
+	}
 
 	rawLines := strings.Split(fullView, "\n")
-	keepLines := viewportHeight
-
 	if keepLines >= len(rawLines) {
 		return fullView
 	}
 
-	// Find a good message boundary to start from (blank line = message separator)
-	// Search further up to avoid splitting a long response mid-way.
 	cutIdx := len(rawLines) - keepLines
 	boundaryIdx := cutIdx
 
@@ -390,7 +390,7 @@ func (m *Model) View() string {
 		}
 	}
 
-	trimmed := "  " + m.theme.Dim.Render("↑ earlier messages truncated") + "\n"
+	trimmed := "  " + m.theme.Dim.Render("↑ ...") + "\n"
 	trimmed += strings.Join(rawLines[boundaryIdx:], "\n")
 	return trimmed
 }
