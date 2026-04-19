@@ -16,6 +16,7 @@ import (
 
 	"github.com/vibecode/vibecode/config"
 	"github.com/vibecode/vibecode/internal/agent"
+	"github.com/vibecode/vibecode/internal/hooks"
 	"github.com/vibecode/vibecode/internal/provider"
 	"github.com/vibecode/vibecode/internal/tool"
 	"github.com/vibecode/vibecode/internal/tui"
@@ -382,6 +383,7 @@ func runOneShot(message string, p provider.Provider, reg *tool.Registry, system 
 	if cw := effectiveContextWindow(cfg); cw > 0 {
 		a.SetContextWindow(cw)
 	}
+	a.SetHooks(buildHooks(cfg))
 	return a.Run(ctx, message)
 }
 
@@ -398,6 +400,7 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 	if cw := effectiveContextWindow(cfg); cw > 0 {
 		a.SetContextWindow(cw)
 	}
+	a.SetHooks(buildHooks(cfg))
 
 	// Use a cancellable root context so SIGINT can exit the program.
 	// Per-turn cancellation is handled by giving each Run() its own child context.
@@ -509,4 +512,13 @@ func effectiveContextWindow(cfg *config.Config) int {
 	default:
 		return 128000
 	}
+}
+
+// buildHooks creates a hook manager from config.
+func buildHooks(cfg *config.Config) *hooks.Manager {
+	hm := hooks.NewManager()
+	if len(cfg.Hooks) > 0 {
+		hm.LoadFromConfig(cfg.Hooks)
+	}
+	return hm
 }

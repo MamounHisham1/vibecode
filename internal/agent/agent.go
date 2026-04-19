@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/vibecode/vibecode/internal/hooks"
 	"github.com/vibecode/vibecode/internal/provider"
 	"github.com/vibecode/vibecode/internal/tool"
 )
@@ -49,6 +50,9 @@ type Agent struct {
 	mu          sync.Mutex
 	callCounter int
 
+	// Hooks
+	hooks *hooks.Manager
+
 	// Token tracking
 	tokens TokenTracker
 
@@ -80,6 +84,11 @@ func New(p provider.Provider, reg *tool.Registry, system string, maxIter int, au
 // SetContextWindow sets the model's context window size in tokens.
 func (a *Agent) SetContextWindow(tokens int) {
 	a.contextWindow = tokens
+}
+
+// SetHooks sets the hook manager for lifecycle events.
+func (a *Agent) SetHooks(h *hooks.Manager) {
+	a.hooks = h
 }
 
 // SetCompactThreshold sets the fraction of the context window at which auto-compact triggers.
@@ -212,6 +221,28 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 
 				a.cb.OnToolStart(call.Name, call.ID, call.Input)
 
+				// PreToolUse hook
+				if a.hooks != nil {
+					hookResult := a.hooks.Run(ctx, hooks.Input{
+						Event:     hooks.PreToolUse,
+						ToolName:  call.Name,
+						ToolInput: call.Input,
+					})
+					if hookResult.Action == hooks.ActionBlock {
+						output := fmt.Sprintf("blocked by hook: %s", hookResult.Reason)
+						a.cb.OnToolOutput(call.Name, call.ID, output, fmt.Errorf("hook blocked: %s", hookResult.Reason))
+						histMu.Lock()
+						toolResults = append(toolResults, provider.ToolResultMessage(
+							call.ID, json.RawMessage(fmt.Sprintf(`"blocked by hook: %s"`, hookResult.Reason)), true,
+						))
+						histMu.Unlock()
+						return
+					}
+					if len(hookResult.UpdatedInput) > 0 {
+						call.Input = hookResult.UpdatedInput
+					}
+				}
+
 				result, err := a.registry.Execute(ctx, call.Name, call.Input)
 
 				var output string
@@ -224,6 +255,25 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 				}
 
 				a.cb.OnToolOutput(call.Name, call.ID, output, err)
+
+				// PostToolUse / PostToolUseFailure hooks
+				if a.hooks != nil {
+					event := hooks.PostToolUse
+					if isError {
+						event = hooks.PostToolUseFailure
+					}
+					errStr := ""
+					if isError {
+						errStr = output
+					}
+					a.hooks.Run(ctx, hooks.Input{
+						Event:      event,
+						ToolName:   call.Name,
+						ToolInput:  call.Input,
+						ToolOutput: truncateStr(output, 2000),
+						ToolError:  errStr,
+					})
+				}
 
 				histMu.Lock()
 				toolResults = append(toolResults, provider.ToolResultMessage(

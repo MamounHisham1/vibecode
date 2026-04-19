@@ -8,14 +8,15 @@ import (
 )
 
 type Config struct {
-	Provider      string            `json:"provider"`
-	Model         string            `json:"model"`
-	BaseURL       string            `json:"base_url"`
-	APIKeys       map[string]string `json:"api_keys"`
-	AutoApprove   []string          `json:"auto_approve"`
-	MaxIterations int               `json:"max_iterations"`
-	Theme         string            `json:"theme"`
-	ContextWindow int               `json:"context_window"`
+	Provider      string                     `json:"provider"`
+	Model         string                     `json:"model"`
+	BaseURL       string                     `json:"base_url"`
+	APIKeys       map[string]string          `json:"api_keys"`
+	AutoApprove   []string                   `json:"auto_approve"`
+	MaxIterations int                        `json:"max_iterations"`
+	Theme         string                     `json:"theme"`
+	ContextWindow int                        `json:"context_window"`
+	Hooks         map[string]json.RawMessage `json:"hooks,omitempty"`
 }
 
 func Default() *Config {
