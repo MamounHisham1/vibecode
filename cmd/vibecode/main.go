@@ -100,6 +100,9 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Agent tool: inject a runner that creates subagents
+	reg.Register(tool.NewAgentTool(reg, makeSubagentRunner(p, cfg), dir))
+
 	system := buildSystemPrompt(dir)
 
 	// Load skills and append their prompts to system
@@ -147,6 +150,18 @@ func buildToolRegistry() *tool.Registry {
 	}
 
 	return reg
+}
+
+// makeSubagentRunner returns a function that creates and runs a subagent.
+func makeSubagentRunner(p provider.Provider, cfg *config.Config) tool.SubagentRunner {
+	return func(ctx context.Context, systemPrompt string, reg *tool.Registry, prompt string) (string, error) {
+		cb := &tool.SubagentCollector{}
+		a := agent.New(p, reg, systemPrompt, 50, nil, cb)
+		if err := a.Run(ctx, prompt); err != nil {
+			return "", err
+		}
+		return cb.Text(), nil
+	}
 }
 
 func buildProvider(cfg *config.Config) (provider.Provider, error) {
