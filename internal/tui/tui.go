@@ -390,7 +390,15 @@ func (m *Model) View() string {
 	}
 
 	rawLines := strings.Split(fullView, "\n")
-	// Show the bottom viewportHeight lines, shifted up by scrollOffset
+	// Clamp scrollOffset to raw lines count (not wrapped visual lines)
+	maxRawScroll := len(rawLines) - viewportHeight
+	if maxRawScroll < 0 {
+		maxRawScroll = 0
+	}
+	if m.scrollOffset > maxRawScroll {
+		m.scrollOffset = maxRawScroll
+	}
+
 	endIdx := len(rawLines) - m.scrollOffset
 	startIdx := endIdx - viewportHeight
 	if startIdx < 0 {
@@ -398,6 +406,9 @@ func (m *Model) View() string {
 	}
 	if endIdx > len(rawLines) {
 		endIdx = len(rawLines)
+	}
+	if endIdx < startIdx {
+		endIdx = startIdx
 	}
 
 	return strings.Join(rawLines[startIdx:endIdx], "\n")
