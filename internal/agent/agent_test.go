@@ -38,15 +38,9 @@ type mockCallback struct {
 	texts       []string
 	toolStarts  []string
 	toolOutputs []string
-	usages      []usageRecord
 	dones       int
 	errors      []error
 	mu          sync.Mutex
-}
-
-type usageRecord struct {
-	input  int
-	output int
 }
 
 func (c *mockCallback) OnText(text string) {
@@ -79,20 +73,6 @@ func (c *mockCallback) OnError(err error) {
 	c.mu.Unlock()
 }
 
-func (c *mockCallback) OnCompact(summary string) {}
-
-func (c *mockCallback) OnUsage(inputTokens, outputTokens int) {
-	c.mu.Lock()
-	c.usages = append(c.usages, usageRecord{input: inputTokens, output: outputTokens})
-	c.mu.Unlock()
-}
-
-func (c *mockCallback) OnEstimatedUsage(inputTokens, outputTokens int) {
-	c.mu.Lock()
-	c.usages = append(c.usages, usageRecord{input: inputTokens, output: outputTokens})
-	c.mu.Unlock()
-}
-
 // mockTool implements tool.Tool for testing.
 type mockTool struct {
 	toolName string
@@ -105,102 +85,6 @@ func (m *mockTool) Parameters() json.RawMessage {
 }
 func (m *mockTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`"ok"`), nil
-}
-
-func TestAgentTokenTracking(t *testing.T) {
-	cb := &mockCallback{}
-	mp := &mockProvider{
-		events: []provider.Event{
-			provider.UsageEvent{InputTokens: 100, OutputTokens: 50},
-			provider.TextEvent{Text: "Hello!"},
-			provider.DoneEvent{},
-		},
-	}
-
-	a := New(mp, tool.NewRegistry(), "test system", 10, nil, cb)
-	a.SetContextWindow(200000)
-
-	err := a.Run(context.Background(), "hi")
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-
-	usage := a.TokenUsage()
-	if usage.InputTokens != 100 {
-		t.Errorf("InputTokens = %d, want 100", usage.InputTokens)
-	}
-	if usage.OutputTokens != 50 {
-		t.Errorf("OutputTokens = %d, want 50", usage.OutputTokens)
-	}
-	if usage.Total() != 150 {
-		t.Errorf("Total() = %d, want 150", usage.Total())
-	}
-
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	if len(cb.usages) != 1 {
-		t.Fatalf("OnUsage called %d times, want 1", len(cb.usages))
-	}
-	if cb.usages[0].input != 100 || cb.usages[0].output != 50 {
-		t.Errorf("OnUsage(%d, %d), want (100, 50)", cb.usages[0].input, cb.usages[0].output)
-	}
-}
-
-func TestAgentTokenTrackingMultipleRequests(t *testing.T) {
-	cb := &mockCallback{}
-	mp := &mockProvider{
-		events: []provider.Event{
-			provider.UsageEvent{InputTokens: 200, OutputTokens: 100},
-			provider.TextEvent{Text: "Response"},
-			provider.DoneEvent{},
-		},
-	}
-
-	a := New(mp, tool.NewRegistry(), "test system", 10, nil, cb)
-
-	a.Run(context.Background(), "msg1")
-	a.Run(context.Background(), "msg2")
-
-	usage := a.TokenUsage()
-	if usage.InputTokens != 400 {
-		t.Errorf("InputTokens after 2 requests = %d, want 400", usage.InputTokens)
-	}
-	if usage.OutputTokens != 200 {
-		t.Errorf("OutputTokens after 2 requests = %d, want 200", usage.OutputTokens)
-	}
-	if usage.Total() != 600 {
-		t.Errorf("Total() after 2 requests = %d, want 600", usage.Total())
-	}
-}
-
-func TestAgentTokenTrackingSplitUsage(t *testing.T) {
-	// Anthropic sends input tokens in message_start and output tokens in message_delta
-	cb := &mockCallback{}
-	mp := &mockProvider{
-		events: []provider.Event{
-			provider.UsageEvent{InputTokens: 500, OutputTokens: 0},
-			provider.TextEvent{Text: "Hi!"},
-			provider.UsageEvent{InputTokens: 0, OutputTokens: 75},
-			provider.DoneEvent{},
-		},
-	}
-
-	a := New(mp, tool.NewRegistry(), "test system", 10, nil, cb)
-	a.Run(context.Background(), "test")
-
-	usage := a.TokenUsage()
-	if usage.InputTokens != 500 {
-		t.Errorf("InputTokens = %d, want 500", usage.InputTokens)
-	}
-	if usage.OutputTokens != 75 {
-		t.Errorf("OutputTokens = %d, want 75", usage.OutputTokens)
-	}
-
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	if len(cb.usages) != 2 {
-		t.Fatalf("OnUsage called %d times, want 2", len(cb.usages))
-	}
 }
 
 func TestAgentTextResponse(t *testing.T) {
@@ -228,47 +112,6 @@ func TestAgentTextResponse(t *testing.T) {
 	}
 	if cb.dones != 1 {
 		t.Errorf("OnDone called %d times, want 1", cb.dones)
-	}
-}
-
-func TestAgentFallbackTokenEstimation(t *testing.T) {
-	// Provider sends NO UsageEvent — agent should estimate tokens
-	cb := &mockCallback{}
-	mp := &mockProvider{
-		events: []provider.Event{
-			provider.TextEvent{Text: "Hello world, this is a test response!"},
-			provider.DoneEvent{},
-		},
-	}
-
-	a := New(mp, tool.NewRegistry(), "test system", 10, nil, cb)
-	a.SetContextWindow(200000)
-
-	err := a.Run(context.Background(), "what is 2+2?")
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-
-	usage := a.TokenUsage()
-	// Should have estimated tokens (not zero)
-	if usage.InputTokens <= 0 {
-		t.Errorf("InputTokens = %d, want > 0 (estimated)", usage.InputTokens)
-	}
-	if usage.OutputTokens <= 0 {
-		t.Errorf("OutputTokens = %d, want > 0 (estimated)", usage.OutputTokens)
-	}
-	if usage.Total() <= 0 {
-		t.Errorf("Total() = %d, want > 0 (estimated)", usage.Total())
-	}
-
-	// Verify callback received the estimated usage
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	if len(cb.usages) != 1 {
-		t.Fatalf("OnUsage called %d times, want 1", len(cb.usages))
-	}
-	if cb.usages[0].input <= 0 || cb.usages[0].output <= 0 {
-		t.Errorf("OnUsage(%d, %d), both want > 0", cb.usages[0].input, cb.usages[0].output)
 	}
 }
 

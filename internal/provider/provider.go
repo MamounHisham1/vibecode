@@ -70,13 +70,6 @@ type ErrorEvent struct {
 
 func (ErrorEvent) isEvent() {}
 
-type UsageEvent struct {
-	InputTokens  int
-	OutputTokens int
-}
-
-func (UsageEvent) isEvent() {}
-
 // Helper constructors.
 
 func UserMessage(text string) Message {

@@ -145,10 +145,6 @@ func (c *SubagentCollector) OnError(err error) {
 	c.errors = append(c.errors, err.Error())
 	c.mu.Unlock()
 }
-func (c *SubagentCollector) OnCompact(summary string)                       {}
-func (c *SubagentCollector) OnUsage(inputTokens, outputTokens int)          {}
-func (c *SubagentCollector) OnEstimatedUsage(inputTokens, outputTokens int) {}
-
 // Text returns the collected text output.
 func (c *SubagentCollector) Text() string {
 	c.mu.Lock()

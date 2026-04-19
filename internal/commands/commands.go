@@ -67,13 +67,6 @@ func (r *Registry) registerBuiltins() {
 	})
 
 	r.Register(Command{
-		Name:        "compact",
-		Description: "Manually trigger context compaction",
-		Type:        TypePrompt,
-		PromptText:  "Please compact the conversation context.",
-	})
-
-	r.Register(Command{
 		Name:        "model",
 		Description: "Show current model or switch model",
 		Type:        TypeLocal,
@@ -94,15 +87,6 @@ func (r *Registry) registerBuiltins() {
 		},
 	})
 
-	r.Register(Command{
-		Name:        "usage",
-		Aliases:     []string{"tokens"},
-		Description: "Show token usage for this session",
-		Type:        TypeLocal,
-		Handler: func(args string) Result {
-			return Result{Output: "Token usage is displayed in the status bar."}
-		},
-	})
 }
 
 // Register adds a command to the registry.

@@ -86,11 +86,6 @@ type Model struct {
 	expanded     map[string]bool
 	ctrlOPress   bool
 
-	// Token/cost tracking
-	totalTokens     int
-	lastTokens      int
-	tokensEstimated bool
-
 	// Session stats
 	sessionStart time.Time
 	turnCount    int
@@ -156,12 +151,6 @@ type interruptMsg struct{}
 type doneMsg struct{}
 type errMsg struct{ err error }
 type tickMsg struct{}
-type compactMsg struct{}
-type usageMsg struct {
-	inputTokens  int
-	outputTokens int
-	estimated    bool
-}
 
 type askQuestionMsg struct {
 	question string
@@ -369,19 +358,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toolIndex = make(map[string]int)
 		return m, nil
 
-	case compactMsg:
-		m.finalizeStream()
-		m.appendSystemMessage("Conversation compacted to free context window space", false)
-		return m, nil
-
-	case usageMsg:
-		m.totalTokens += msg.inputTokens + msg.outputTokens
-		m.lastTokens = msg.inputTokens + msg.outputTokens
-		if msg.estimated {
-			m.tokensEstimated = true
-		}
-		return m, nil
-
 	case askQuestionMsg:
 		m.askQuestion = msg.question
 		m.askOptions = msg.options
@@ -569,10 +545,6 @@ func (m *Model) renderStatusBar() string {
 	// Right side: token count + turn count + elapsed + hints
 	elapsed := time.Since(m.sessionStart).Round(time.Second)
 	right := ""
-	if m.totalTokens > 0 {
-		right += t.StatusBarDim.Render(formatTokenCount(m.totalTokens, m.tokensEstimated))
-		right += t.StatusBarDim.Render(" · ")
-	}
 	if m.turnCount > 0 {
 		right += t.StatusBarDim.Render(fmt.Sprintf("turn %d", m.turnCount))
 		right += t.StatusBarDim.Render(" · ")
@@ -1114,18 +1086,6 @@ func (c *TUICallback) OnError(err error) {
 	c.program.Send(errMsg{err: err})
 }
 
-func (c *TUICallback) OnCompact(summary string) {
-	c.program.Send(compactMsg{})
-}
-
-func (c *TUICallback) OnUsage(inputTokens, outputTokens int) {
-	c.program.Send(usageMsg{inputTokens: inputTokens, outputTokens: outputTokens})
-}
-
-func (c *TUICallback) OnEstimatedUsage(inputTokens, outputTokens int) {
-	c.program.Send(usageMsg{inputTokens: inputTokens, outputTokens: outputTokens, estimated: true})
-}
-
 // AskFunc returns an AskFunc that sends questions to the TUI and waits for answers.
 func (c *TUICallback) AskFunc() tool.AskFunc {
 	return func(ctx context.Context, question string, options []tool.Option) (string, error) {
@@ -1420,17 +1380,6 @@ func humanizeToolName(name string) string {
 		parts[i] = strings.ToUpper(part[:1]) + part[1:]
 	}
 	return strings.Join(parts, " ")
-}
-
-func formatTokenCount(n int, estimated bool) string {
-	label := "tokens"
-	if estimated {
-		label = "tokens (est.)"
-	}
-	if n >= 1000 {
-		return fmt.Sprintf("%dk %s", n/1000, label)
-	}
-	return fmt.Sprintf("%d %s", n, label)
 }
 
 func formatDuration(d time.Duration) string {

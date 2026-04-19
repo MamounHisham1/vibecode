@@ -430,9 +430,6 @@ func runOneShot(message string, p provider.Provider, reg *tool.Registry, system 
 
 	cb := &cliCallback{}
 	a := agent.New(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb)
-	if cw := effectiveContextWindow(cfg); cw > 0 {
-		a.SetContextWindow(cw)
-	}
 	a.SetHooks(buildHooks(cfg))
 	return a.Run(ctx, message)
 }
@@ -474,9 +471,6 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 	}
 
 	a := agent.New(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb)
-	if cw := effectiveContextWindow(cfg); cw > 0 {
-		a.SetContextWindow(cw)
-	}
 	a.SetHooks(buildHooks(cfg))
 
 	// Use a cancellable root context so SIGINT can exit the program.
@@ -541,57 +535,6 @@ func (c *cliCallback) OnError(err error) {
 	}
 	fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 }
-func (c *cliCallback) OnCompact(summary string) {
-	if c.buf.Len() > 0 {
-		fmt.Print(renderMarkdownCLI(c.buf.String()))
-		c.buf.Reset()
-	}
-	fmt.Println("ℹ Conversation compacted")
-}
-func (c *cliCallback) OnUsage(inputTokens, outputTokens int)          {}
-func (c *cliCallback) OnEstimatedUsage(inputTokens, outputTokens int) {}
-
-// effectiveContextWindow returns the context window size for the configured model.
-// Falls back to defaults per provider if not explicitly set.
-func effectiveContextWindow(cfg *config.Config) int {
-	if cfg.ContextWindow > 0 {
-		return cfg.ContextWindow
-	}
-
-	// Default context windows per model family
-	model := strings.ToLower(cfg.Model)
-	switch {
-	case strings.Contains(model, "claude-3-5-sonnet"), strings.Contains(model, "claude-3.5-sonnet"):
-		return 200000
-	case strings.Contains(model, "claude-3-opus"), strings.Contains(model, "claude-3.5-opus"):
-		return 200000
-	case strings.Contains(model, "claude-3-haiku"):
-		return 200000
-	case strings.Contains(model, "claude-sonnet-4"), strings.Contains(model, "claude-sonnet-4-6"):
-		return 200000
-	case strings.Contains(model, "claude-opus-4"), strings.Contains(model, "claude-opus-4-7"):
-		return 200000
-	case strings.Contains(model, "claude"):
-		return 200000
-	case strings.Contains(model, "gpt-4o"), strings.Contains(model, "gpt-5"):
-		return 128000
-	case strings.Contains(model, "gpt-4-turbo"):
-		return 128000
-	case strings.Contains(model, "gpt-4"):
-		return 8192
-	case strings.Contains(model, "deepseek"):
-		return 64000
-	case strings.Contains(model, "moonshot"), strings.Contains(model, "kimi"):
-		return 8192
-	case strings.Contains(model, "qwen"):
-		return 32768
-	case strings.Contains(model, "glm"):
-		return 128000
-	default:
-		return 128000
-	}
-}
-
 // buildHooks creates a hook manager from config.
 func buildHooks(cfg *config.Config) *hooks.Manager {
 	hm := hooks.NewManager()
@@ -659,7 +602,7 @@ func buildConfigCmd() *cobra.Command {
 }
 
 var validConfigKeys = []string{
-	"provider", "model", "base_url", "max_iterations", "theme", "context_window",
+	"provider", "model", "base_url", "max_iterations", "theme",
 }
 
 func getConfigValue(cfg *config.Config, key string) (string, error) {
@@ -674,8 +617,6 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 		return fmt.Sprintf("%d", cfg.MaxIterations), nil
 	case "theme":
 		return cfg.Theme, nil
-	case "context_window":
-		return fmt.Sprintf("%d", cfg.ContextWindow), nil
 	default:
 		return "", fmt.Errorf("unknown config key: %s (valid: %s)", key, strings.Join(validConfigKeys, ", "))
 	}
@@ -707,13 +648,6 @@ func setConfigValue(cfg *config.Config, key, value string) error {
 		return nil
 	case "theme":
 		cfg.Theme = value
-		return nil
-	case "context_window":
-		n, err := strconv.Atoi(value)
-		if err != nil {
-			return fmt.Errorf("context_window must be a number")
-		}
-		cfg.ContextWindow = n
 		return nil
 	default:
 		return fmt.Errorf("unknown config key: %s (valid: %s)", key, strings.Join(validConfigKeys, ", "))

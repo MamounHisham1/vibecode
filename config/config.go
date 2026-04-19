@@ -15,7 +15,6 @@ type Config struct {
 	AutoApprove   []string                   `json:"auto_approve"`
 	MaxIterations int                        `json:"max_iterations"`
 	Theme         string                     `json:"theme"`
-	ContextWindow int                        `json:"context_window"`
 	Hooks         map[string]json.RawMessage `json:"hooks,omitempty"`
 }
 
@@ -132,7 +131,6 @@ type Settings struct {
 	AutoApprove   []string                   `json:"auto_approve,omitempty"`
 	MaxIterations int                        `json:"max_iterations,omitempty"`
 	Theme         string                     `json:"theme,omitempty"`
-	ContextWindow int                        `json:"context_window,omitempty"`
 	Hooks         map[string]json.RawMessage `json:"hooks,omitempty"`
 }
 
@@ -185,9 +183,6 @@ func mergeSettings(cfg *Config, s *Settings) {
 	}
 	if s.Theme != "" {
 		cfg.Theme = s.Theme
-	}
-	if s.ContextWindow > 0 {
-		cfg.ContextWindow = s.ContextWindow
 	}
 	if len(s.Hooks) > 0 {
 		if cfg.Hooks == nil {

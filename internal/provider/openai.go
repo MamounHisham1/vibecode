@@ -40,11 +40,8 @@ type openAIRequest struct {
 	Model         string          `json:"model"`
 	Messages      []openAIMessage `json:"messages"`
 	Tools         []openAITool    `json:"tools,omitempty"`
-	Stream        bool            `json:"stream"`
-	MaxTokens     int             `json:"max_completion_tokens"`
-	StreamOptions *struct {
-		IncludeUsage bool `json:"include_usage"`
-	} `json:"stream_options,omitempty"`
+	Stream    bool `json:"stream"`
+	MaxTokens int  `json:"max_completion_tokens"`
 }
 
 type openAIMessage struct {
@@ -72,11 +69,6 @@ type openAIFunc struct {
 
 type openAISSE struct {
 	Choices []openAIChoice `json:"choices"`
-	Usage   *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage,omitempty"`
 }
 
 type openAIChoice struct {
@@ -189,9 +181,6 @@ func (o *OpenAIProvider) buildRequest(req Request) ([]byte, error) {
 		Tools:     tools,
 		Stream:    true,
 		MaxTokens: 16384,
-		StreamOptions: &struct {
-			IncludeUsage bool `json:"include_usage"`
-		}{IncludeUsage: true},
 	}
 
 	return json.Marshal(or)
@@ -257,14 +246,6 @@ func (o *OpenAIProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 					}
 					toolCalls[tc.Index] = existing
 				}
-			}
-		}
-
-		// Emit usage if present (sent on final chunk with stream_options.include_usage)
-		if sse.Usage != nil && (sse.Usage.PromptTokens > 0 || sse.Usage.CompletionTokens > 0) {
-			ch <- UsageEvent{
-				InputTokens:  sse.Usage.PromptTokens,
-				OutputTokens: sse.Usage.CompletionTokens,
 			}
 		}
 	}

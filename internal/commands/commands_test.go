@@ -17,8 +17,6 @@ func TestParseInput(t *testing.T) {
 		{"/clear", "clear", "", true},
 		{"hello", "", "", false},
 		{"/model gpt-4", "model", "gpt-4", true},
-		{"  /compact  ", "compact", "", true},
-		{"/usage", "usage", "", true},
 	}
 
 	for _, tt := range tests {
@@ -79,12 +77,6 @@ func TestBuiltinCommands(t *testing.T) {
 		t.Error("clear should set Clear=true")
 	}
 
-	// compact
-	cmd, _ = r.Lookup("compact")
-	if cmd.Type != TypePrompt {
-		t.Errorf("compact type = %v, want TypePrompt", cmd.Type)
-	}
-
 	// model
 	cmd, _ = r.Lookup("model")
 	result = cmd.Handler("")
@@ -101,7 +93,7 @@ func TestAllCommands(t *testing.T) {
 	r := NewRegistry()
 	all := r.All()
 
-	if len(all) < 5 {
+	if len(all) < 3 {
 		t.Errorf("All() returned %d commands, want >= 5", len(all))
 	}
 
