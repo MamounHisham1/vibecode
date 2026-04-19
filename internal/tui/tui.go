@@ -276,7 +276,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.finalizeStream()
-		m.appendSystemMessage(fmt.Sprintf("Error: %s", msg.err), true)
+		// Suppress duplicate errors from context cancellation —
+		// interruptAgent() already shows "Interrupted by user".
+		if m.waiting {
+			errText := msg.err.Error()
+			if strings.Contains(errText, "context canceled") || strings.Contains(errText, "context.Cancel") {
+				// Already handled by interruptAgent
+				return m, nil
+			}
+			m.appendSystemMessage(fmt.Sprintf("Error: %s", msg.err), true)
+		}
 		m.waiting = false
 		m.input.SetWaiting(false)
 		m.toolIndex = make(map[string]int)
@@ -369,20 +378,20 @@ func (m *Model) View() string {
 	}
 
 	// Find a good message boundary to start from (blank line = message separator)
-	// Start scanning from the cut point upward to find the nearest separator
+	// Search further up to avoid splitting a long response mid-way.
 	cutIdx := len(rawLines) - keepLines
 	boundaryIdx := cutIdx
 
-	// Search upward for a blank line (message boundary) within a reasonable range
-	searchLimit := min(cutIdx, 8)
+	searchLimit := min(cutIdx, viewportHeight)
 	for i := cutIdx; i >= cutIdx-searchLimit && i >= 0; i-- {
 		if strings.TrimSpace(rawLines[i]) == "" {
-			boundaryIdx = i + 1 // Start from the line after the blank
+			boundaryIdx = i + 1
 			break
 		}
 	}
 
-	trimmed := strings.Join(rawLines[boundaryIdx:], "\n")
+	trimmed := "  " + m.theme.Dim.Render("↑ earlier messages truncated") + "\n"
+	trimmed += strings.Join(rawLines[boundaryIdx:], "\n")
 	return trimmed
 }
 
@@ -806,15 +815,18 @@ func (m *Model) advanceSpinnerVerb() {
 	m.verbIndex = (m.verbIndex + 1) % len(spinnerVerbs)
 }
 
-// interruptAgent cancels the running agent goroutine and waits for it to finish.
+// interruptAgent cancels the running agent turn so the goroutine can proceed
+// to wait for the next message.  It does NOT close inputChan, so the session
+// stays alive and the user can continue chatting.
 func (m *Model) interruptAgent() {
-	// Cancel the context to stop the LLM stream and tool execution
+	// Cancel the per-turn context — this stops the LLM stream and tool execution.
 	if m.cancelFunc != nil {
 		m.cancelFunc()
 	}
 
-	// Wait for the agent goroutine to acknowledge the interruption.
-	// We use a short timeout to avoid blocking the UI.
+	// Give the agent goroutine a moment to react (it will receive the context
+	// cancellation and return from Run).  We use a short timeout to avoid
+	// blocking the TUI event loop.
 	select {
 	case <-m.interruptCh:
 		// Agent acknowledged interruption
@@ -822,8 +834,8 @@ func (m *Model) interruptAgent() {
 		// Timeout — force the UI state anyway
 	}
 
-	// Update UI state directly since the agent goroutine may not
-	// send the proper done/error messages if it was forcefully cancelled.
+	// Update UI state directly since the agent goroutine may not send the
+	// proper done/error messages if it was forcefully cancelled.
 	m.finalizeStream()
 	m.appendSystemMessage("Interrupted by user", false)
 	m.waiting = false

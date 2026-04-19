@@ -383,9 +383,6 @@ func runOneShot(message string, p provider.Provider, reg *tool.Registry, system 
 }
 
 func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg *config.Config, dir string) error {
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
 	inputChan := make(chan string, 16)
 
 	m := tui.New(inputChan)
@@ -396,11 +393,23 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 	cb := tui.NewCallback(pgm)
 	a := agent.New(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb)
 
+	// Use a cancellable root context so SIGINT can exit the program.
+	// Per-turn cancellation is handled by giving each Run() its own child context.
+	rootCtx, rootCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer rootCancel()
+
 	go func() {
 		for msg := range inputChan {
-			if err := a.Run(ctx, msg); err != nil {
+			// Create a fresh child context for each turn so that cancelling one
+			// turn (e.g. user presses Ctrl+C to stop generation) does not kill
+			// subsequent turns.
+			turnCtx, turnCancel := context.WithCancel(rootCtx)
+			m.SetCancelFunc(turnCancel)
+
+			if err := a.Run(turnCtx, msg); err != nil {
 				cb.OnError(err)
 			}
+			turnCancel()
 		}
 	}()
 
