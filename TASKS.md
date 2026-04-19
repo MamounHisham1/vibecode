@@ -121,7 +121,7 @@ IMPORTANT: Please read the refrence at @../../sites/cluade-code, this is the ai 
   - Unified diff format
   - File: new `internal/tui/diff.go`
 
-- [ ] **Syntax highlighting in file reads** — Highlight code based on file extension
+- [x] **Syntax highlighting in file reads** — Highlight code based on file extension
   - Use Chroma or similar Go syntax highlighter
   - File: `internal/tool/read.go` output formatting, TUI rendering
 
