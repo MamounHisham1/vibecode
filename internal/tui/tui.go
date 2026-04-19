@@ -335,7 +335,8 @@ func (m *Model) View() string {
 		b.WriteString(m.renderWelcome())
 	}
 
-	// Transcript
+	// Transcript — render all content, no truncation.
+	// The alt screen buffer lets the terminal handle scrolling naturally.
 	content := m.renderTranscript()
 	if content != "" {
 		b.WriteString("\n" + content)
@@ -345,54 +346,7 @@ func (m *Model) View() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.renderInputArea())
 
-	// Viewport management.
-	// When idle (not streaming): show full conversation so the user can read
-	// everything. The input area may scroll off the bottom, which is fine —
-	// the user can scroll their terminal.
-	// When streaming/waiting: truncate to keep the spinner + input visible.
-	fullView := b.String()
-
-	if !m.waiting && len(m.toolIndex) == 0 {
-		return fullView
-	}
-
-	viewportHeight := m.height - 1
-	if viewportHeight < 3 {
-		viewportHeight = 3
-	}
-
-	totalLines := countWrappedLines(fullView, m.width)
-	if totalLines <= viewportHeight {
-		return fullView
-	}
-
-	// Only truncate during active streaming to keep input area visible.
-	// Reserve space for: status bar (1) + input area (~3) = 4 lines minimum for input
-	inputReserve := 4
-	keepLines := viewportHeight - inputReserve
-	if keepLines < viewportHeight/2 {
-		keepLines = viewportHeight / 2
-	}
-
-	rawLines := strings.Split(fullView, "\n")
-	if keepLines >= len(rawLines) {
-		return fullView
-	}
-
-	cutIdx := len(rawLines) - keepLines
-	boundaryIdx := cutIdx
-
-	searchLimit := min(cutIdx, viewportHeight)
-	for i := cutIdx; i >= cutIdx-searchLimit && i >= 0; i-- {
-		if strings.TrimSpace(rawLines[i]) == "" {
-			boundaryIdx = i + 1
-			break
-		}
-	}
-
-	trimmed := "  " + m.theme.Dim.Render("↑ ...") + "\n"
-	trimmed += strings.Join(rawLines[boundaryIdx:], "\n")
-	return trimmed
+	return b.String()
 }
 
 // countWrappedLines counts the visual lines a string will occupy,
