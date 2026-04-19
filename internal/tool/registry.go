@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -64,7 +65,26 @@ func (r *Registry) Execute(ctx context.Context, name string, input json.RawMessa
 	if !ok {
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
-	return t.Execute(ctx, input)
+	result, err := t.Execute(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+
+	// Truncate large results
+	const maxResultSize = 50000
+	if len(result) > maxResultSize {
+		truncated := result[:maxResultSize]
+		// Try to find a clean break point
+		if idx := bytes.LastIndex(truncated, []byte("\n")); idx > maxResultSize/2 {
+			truncated = truncated[:idx]
+		}
+		truncated = append(truncated, []byte(
+			fmt.Sprintf("\n\n... (%d bytes truncated, showing %d of %d total)",
+				len(result)-len(truncated), len(truncated), len(result)))...)
+		return truncated, nil
+	}
+
+	return result, nil
 }
 
 // Helper to create JSON schemas concisely.
