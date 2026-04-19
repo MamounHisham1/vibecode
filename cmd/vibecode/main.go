@@ -388,7 +388,7 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 	m := tui.New(inputChan)
 	m.SetStatus(cfg.Model, dir)
 
-	pgm := tea.NewProgram(m, tea.WithMouseCellMotion())
+	pgm := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	cb := tui.NewCallback(pgm)
 	a := agent.New(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb)
