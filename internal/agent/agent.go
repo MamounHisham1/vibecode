@@ -133,6 +133,7 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 		var textBuf strings.Builder
 		var toolCalls []provider.ToolCallEvent
 		toolInputBufs := make(map[string]string)
+		receivedUsage := false
 
 		for ev := range events {
 			switch e := ev.(type) {
@@ -162,6 +163,7 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 				}
 
 			case provider.UsageEvent:
+				receivedUsage = true
 				a.mu.Lock()
 				a.tokens.Add(e.InputTokens, e.OutputTokens)
 				a.mu.Unlock()
@@ -174,6 +176,11 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 				a.cb.OnError(e.Err)
 				return e.Err
 			}
+		}
+
+		// Fallback: estimate tokens if provider did not report usage
+		if !receivedUsage {
+			a.estimateAndReportTokens(req, textBuf.String(), toolCalls)
 		}
 
 		fullText := textBuf.String()
@@ -409,6 +416,27 @@ func (a *Agent) resolveToolInputs(calls []provider.ToolCallEvent, bufs map[strin
 		}
 	}
 	return out
+}
+
+// estimateAndReportTokens provides a fallback token estimate when the provider
+// does not report usage in its streaming response (common with OpenAI-compatible APIs).
+func (a *Agent) estimateAndReportTokens(req provider.Request, responseText string, toolCalls []provider.ToolCallEvent) {
+	// Estimate input tokens from system prompt + message history
+	inputEst := roughTokenEstimate(req.System, bytesPerToken)
+	for _, msg := range req.Messages {
+		inputEst += estimateMessageTokens(msg)
+	}
+
+	// Estimate output tokens from response text + tool call inputs
+	outputEst := roughTokenEstimate(responseText, bytesPerToken)
+	for _, tc := range toolCalls {
+		outputEst += roughTokenEstimate(string(tc.Input), jsonBytesPerToken)
+	}
+
+	a.mu.Lock()
+	a.tokens.Add(inputEst, outputEst)
+	a.mu.Unlock()
+	a.cb.OnUsage(inputEst, outputEst)
 }
 
 func (a *Agent) buildToolDefs() []provider.ToolDef {

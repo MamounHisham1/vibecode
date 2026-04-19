@@ -475,7 +475,7 @@ func (m *Model) renderStatusBar() string {
 	elapsed := time.Since(m.sessionStart).Round(time.Second)
 	right := ""
 	if m.totalTokens > 0 {
-		right += t.StatusBarDim.Render(fmt.Sprintf("%dk tokens", m.totalTokens/1000))
+		right += t.StatusBarDim.Render(formatTokenCount(m.totalTokens))
 		right += t.StatusBarDim.Render(" · ")
 	}
 	if m.turnCount > 0 {
@@ -1278,6 +1278,13 @@ func humanizeToolName(name string) string {
 		parts[i] = strings.ToUpper(part[:1]) + part[1:]
 	}
 	return strings.Join(parts, " ")
+}
+
+func formatTokenCount(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%dk tokens", n/1000)
+	}
+	return fmt.Sprintf("%d tokens", n)
 }
 
 func formatDuration(d time.Duration) string {

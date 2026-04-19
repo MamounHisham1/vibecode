@@ -109,7 +109,7 @@ func Providers() []ProviderInfo {
 			APIType: "openai",
 			BaseURL: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
 			AltBaseURLs: map[string]string{
-				"Global (z.ai)": "https://api.z.ai/api/anthropic/v1/messages",
+				"Global (z.ai)":       "https://api.z.ai/api/anthropic/v1/messages",
 				"China (bigmodel.cn)": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
 			},
 			Models: []ModelInfo{
@@ -167,18 +167,18 @@ type validationDoneMsg struct{ err error }
 
 // SetupModel is the bubbletea model for the first-time setup flow.
 type SetupModel struct {
-	theme      Theme
-	phase      setupPhase
-	providers  []ProviderInfo
-	selected   int
+	theme       Theme
+	phase       setupPhase
+	providers   []ProviderInfo
+	selected    int
 	endpointCur int
-	endpoints  []string // ordered keys from AltBaseURLs
-	modelCur   int
-	input      []rune
-	inputCur   int
-	blinkOn    bool
-	width      int
-	height     int
+	endpoints   []string // ordered keys from AltBaseURLs
+	modelCur    int
+	input       []rune
+	inputCur    int
+	blinkOn     bool
+	width       int
+	height      int
 
 	chosenProvider ProviderInfo
 	chosenModel    ModelInfo
