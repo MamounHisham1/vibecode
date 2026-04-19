@@ -376,7 +376,6 @@ func (m *Model) View() string {
 
 	totalLines := countWrappedLines(fullView, m.width)
 	if totalLines <= viewportHeight {
-		m.scrollOffset = 0
 		return fullView
 	}
 
