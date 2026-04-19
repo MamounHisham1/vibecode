@@ -137,7 +137,7 @@ func buildToolRegistry() *tool.Registry {
 	reg.Register(tool.Shell{})
 	reg.Register(tool.Git{})
 	reg.Register(tool.WebFetch{})
-	reg.Register(tool.AskUser{})
+	reg.Register(tool.AskUserStdin())
 	reg.Register(&tool.TodoWrite{})
 
 	// Web search (optional, requires API key)
@@ -459,6 +459,14 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 	pgm := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	cb := tui.NewCallback(pgm)
+
+	// Wire TUI-aware ask function
+	if askTool, ok := reg.Get("ask_user"); ok {
+		if au, ok := askTool.(*tool.AskUser); ok {
+			au.SetAskFunc(cb.AskFunc())
+		}
+	}
+
 	a := agent.New(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb)
 	if cw := effectiveContextWindow(cfg); cw > 0 {
 		a.SetContextWindow(cw)

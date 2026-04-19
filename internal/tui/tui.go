@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/vibecode/vibecode/internal/tool"
 )
 
 const (
@@ -100,6 +101,11 @@ type Model struct {
 
 	// Command handler
 	commandHandler func(cmdName, args string) (string, bool) // returns (output, clearHistory)
+
+	// Ask user question state
+	askQuestion string
+	askOptions  []string
+	askAnswer   chan string
 }
 
 type transcriptItem struct {
@@ -149,6 +155,12 @@ type usageMsg struct {
 	inputTokens  int
 	outputTokens int
 	estimated    bool
+}
+
+type askQuestionMsg struct {
+	question string
+	options  []string
+	answer   chan string
 }
 
 // ─── Constructor ────────────────────────────────────────────────
@@ -352,6 +364,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case usageMsg:
 		m.totalTokens += msg.inputTokens + msg.outputTokens
 		m.lastTokens = msg.inputTokens + msg.outputTokens
+		if msg.estimated {
+			m.tokensEstimated = true
+		}
+		return m, nil
+
+	case askQuestionMsg:
+		m.askQuestion = msg.question
+		m.askOptions = msg.options
+		m.askAnswer = msg.answer
+		m.waiting = false
+		m.input.SetWaiting(false)
 		return m, nil
 	}
 
@@ -565,6 +588,19 @@ func (m *Model) renderTranscript() string {
 
 func (m *Model) renderInputArea() string {
 	return m.input.View()
+}
+
+func (m *Model) renderAskQuestion() string {
+	t := m.theme
+	var b strings.Builder
+	b.WriteString(t.AssistantIcon.Render("  ? ") + m.askQuestion)
+	if len(m.askOptions) > 0 {
+		b.WriteString("\n")
+		for i, opt := range m.askOptions {
+			b.WriteString(t.StatusBarDim.Render(fmt.Sprintf("    %d. %s\n", i+1, opt)))
+		}
+	}
+	return b.String()
 }
 
 // ─── Entry Renderers ────────────────────────────────────────────
@@ -1035,6 +1071,24 @@ func (c *TUICallback) OnUsage(inputTokens, outputTokens int) {
 
 func (c *TUICallback) OnEstimatedUsage(inputTokens, outputTokens int) {
 	c.program.Send(usageMsg{inputTokens: inputTokens, outputTokens: outputTokens, estimated: true})
+}
+
+// AskFunc returns an AskFunc that sends questions to the TUI and waits for answers.
+func (c *TUICallback) AskFunc() tool.AskFunc {
+	return func(ctx context.Context, question string, options []tool.Option) (string, error) {
+		answerCh := make(chan string, 1)
+		optLabels := make([]string, len(options))
+		for i, o := range options {
+			optLabels[i] = o.Label
+		}
+		c.program.Send(askQuestionMsg{question: question, options: optLabels, answer: answerCh})
+		select {
+		case answer := <-answerCh:
+			return answer, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 }
 
 // ─── Tool Summary ───────────────────────────────────────────────

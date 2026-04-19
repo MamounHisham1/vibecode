@@ -93,7 +93,7 @@ IMPORTANT: Please read the refrence at @../../sites/cluade-code, this is the ai 
   - Built-in agents: general-purpose, explore, plan
   - File: new `internal/tool/agent.go`, `internal/agent/subagent.go`
 
-- [ ] **AskUserQuestion tool** — Proper interactive question UI in TUI
+- [x] **AskUserQuestion tool** — Proper interactive question UI in TUI
   - Multiple choice options
   - Free text input
   - Multi-select support
