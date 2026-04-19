@@ -211,6 +211,11 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
+	// Track current content block for proper tool call accumulation
+	var curBlockType string // "text" or "tool_use"
+	var curToolID string
+	var curToolInput strings.Builder
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -236,23 +241,14 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 
 		switch sse.Type {
 		case "content_block_start":
-			// Check if the content block itself has tool_use info
-			if sse.ContentBlock.Type == "tool_use" {
+			curBlockType = sse.ContentBlock.Type
+			if curBlockType == "tool_use" {
+				curToolID = sse.ContentBlock.ID
+				curToolInput.Reset()
+				// Emit tool call with name; input will follow via deltas
 				ch <- ToolCallEvent{
-					ID:   sse.ContentBlock.ID,
+					ID:   curToolID,
 					Name: sse.ContentBlock.Name,
-				}
-			}
-			// Also check delta for backward compat
-			if sse.Delta != nil {
-				var delta anthropicDelta
-				if err := json.Unmarshal(sse.Delta, &delta); err == nil {
-					if delta.Type == "tool_use" {
-						ch <- ToolCallEvent{
-							ID:   sse.ContentBlock.ID,
-							Name: sse.ContentBlock.Name,
-						}
-					}
 				}
 			}
 
@@ -263,12 +259,27 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 				case "text_delta":
 					ch <- TextEvent{Text: delta.Text}
 				case "input_json_delta":
-					ch <- TextEvent{Text: delta.PartialJSON}
+					// Accumulate into tool input buffer
+					curToolInput.WriteString(delta.PartialJSON)
 				}
 			}
 
 		case "content_block_stop":
-			// Block complete
+			if curBlockType == "tool_use" && curToolID != "" {
+				// Emit the complete tool call input
+				input := json.RawMessage(curToolInput.String())
+				if len(input) == 0 {
+					input = json.RawMessage("{}")
+				}
+				ch <- ToolCallEvent{
+					ID:    curToolID,
+					Name:  "", // already sent in content_block_start
+					Input: input,
+				}
+				curToolID = ""
+				curToolInput.Reset()
+			}
+			curBlockType = ""
 
 		case "message_start":
 			if sse.Message.Usage.InputTokens > 0 || sse.Message.Usage.OutputTokens > 0 {

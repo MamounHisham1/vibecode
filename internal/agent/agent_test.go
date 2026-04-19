@@ -324,6 +324,102 @@ func TestAgentMaxIterations(t *testing.T) {
 	}
 }
 
+func TestAgentToolCallWithDeferredInput(t *testing.T) {
+	// Simulates Anthropic's pattern: ToolCallEvent(name only) then ToolCallEvent(input only)
+	cb := &mockCallback{}
+	reg := tool.NewRegistry()
+	reg.Register(&mockTool{toolName: "read_file"})
+
+	callCount := 0
+	mp := &mockProviderFunc{
+		fn: func(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+			ch := make(chan provider.Event, 8)
+			go func() {
+				defer close(ch)
+				callCount++
+				if callCount == 1 {
+					// First call: text + tool call (deferred input pattern)
+					ch <- provider.TextEvent{Text: "Let me read that file."}
+					ch <- provider.ToolCallEvent{
+						ID:   "toolu_01",
+						Name: "read_file",
+					}
+					ch <- provider.ToolCallEvent{
+						ID:    "toolu_01",
+						Input: json.RawMessage(`{"path": "/tmp/test.go"}`),
+					}
+				} else {
+					// Second call: just text (response to tool result)
+					ch <- provider.TextEvent{Text: "Done!"}
+				}
+				ch <- provider.DoneEvent{}
+			}()
+			return ch, nil
+		},
+	}
+
+	a := New(mp, reg, "test system", 10, []string{"read_file"}, cb)
+	err := a.Run(context.Background(), "read test.go")
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	if len(cb.toolStarts) != 1 || cb.toolStarts[0] != "read_file" {
+		t.Errorf("toolStarts = %v, want [read_file]", cb.toolStarts)
+	}
+	if len(cb.toolOutputs) != 1 {
+		t.Errorf("toolOutputs count = %d, want 1", len(cb.toolOutputs))
+	}
+	if cb.dones != 1 {
+		t.Errorf("dones = %d, want 1", cb.dones)
+	}
+}
+
+func TestAgentToolCallWithAllInOne(t *testing.T) {
+	// OpenAI pattern: tool call with name + input in one event
+	cb := &mockCallback{}
+	reg := tool.NewRegistry()
+	reg.Register(&mockTool{toolName: "shell"})
+
+	callCount := 0
+	mp := &mockProviderFunc{
+		fn: func(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+			ch := make(chan provider.Event, 4)
+			go func() {
+				defer close(ch)
+				callCount++
+				if callCount == 1 {
+					ch <- provider.ToolCallEvent{
+						ID:    "call_abc",
+						Name:  "shell",
+						Input: json.RawMessage(`{"command": "ls -la"}`),
+					}
+				} else {
+					ch <- provider.TextEvent{Text: "Done!"}
+				}
+				ch <- provider.DoneEvent{}
+			}()
+			return ch, nil
+		},
+	}
+
+	a := New(mp, reg, "test system", 10, []string{"shell"}, cb)
+	err := a.Run(context.Background(), "list files")
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	if len(cb.toolStarts) != 1 || cb.toolStarts[0] != "shell" {
+		t.Errorf("toolStarts = %v, want [shell]", cb.toolStarts)
+	}
+}
+
 // mockProviderFunc is a provider implemented as a function.
 type mockProviderFunc struct {
 	fn func(ctx context.Context, req provider.Request) (<-chan provider.Event, error)

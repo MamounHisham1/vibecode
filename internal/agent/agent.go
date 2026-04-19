@@ -132,22 +132,17 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 
 		var textBuf strings.Builder
 		var toolCalls []provider.ToolCallEvent
-		toolInputBufs := make(map[string]string)
 		receivedUsage := false
 
 		for ev := range events {
 			switch e := ev.(type) {
 			case provider.TextEvent:
-				if len(toolCalls) > 0 {
-					lastID := toolCalls[len(toolCalls)-1].ID
-					toolInputBufs[lastID] += e.Text
-					continue
-				}
 				textBuf.WriteString(e.Text)
 				a.cb.OnText(e.Text)
 
 			case provider.ToolCallEvent:
 				if e.Name != "" {
+					// Start of a new tool call
 					id := e.ID
 					if id == "" {
 						id = a.nextCallID()
@@ -157,8 +152,13 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 						Name:  e.Name,
 						Input: e.Input,
 					})
-					if e.Input == nil {
-						toolInputBufs[id] = ""
+				} else if e.ID != "" && e.Input != nil {
+					// Completing a previously started tool call with input data
+					for i, tc := range toolCalls {
+						if tc.ID == e.ID {
+							toolCalls[i].Input = e.Input
+							break
+						}
 					}
 				}
 
@@ -185,19 +185,6 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 
 		fullText := textBuf.String()
 
-		// If no protocol-level tool calls, check for inline JSON tool calls in text
-		if len(toolCalls) == 0 && fullText != "" {
-			inlineCalls := a.parseInlineToolCalls(fullText)
-			if len(inlineCalls) > 0 {
-				toolCalls = inlineCalls
-				// Strip the JSON from displayed text
-				cleanText := a.stripInlineJSON(fullText)
-				if strings.TrimSpace(cleanText) != "" {
-					a.cb.OnText("") // just to keep flow
-				}
-			}
-		}
-
 		// Pure text response, no tool calls
 		if len(toolCalls) == 0 {
 			a.mu.Lock()
@@ -208,7 +195,7 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 		}
 
 		// Execute tool calls
-		finalCalls := a.resolveToolInputs(toolCalls, toolInputBufs)
+		finalCalls := a.resolveToolInputs(toolCalls)
 
 		a.mu.Lock()
 		a.history = append(a.history, provider.AssistantToolCallsMessage(finalCalls))
@@ -282,130 +269,10 @@ func (a *Agent) History() []provider.Message {
 	return a.history
 }
 
-// parseInlineToolCalls detects inline JSON tool calls in text output.
-// Handles patterns like {"command":"ls -la"} for shell/git tools.
-func (a *Agent) parseInlineToolCalls(text string) []provider.ToolCallEvent {
-	var calls []provider.ToolCallEvent
-
-	// Map of known parameter names to tool names
-	paramToTool := map[string]string{
-		"command": "shell",
-		"path":    "read_file",
-	}
-
-	// Find all JSON objects in the text
-	for i := 0; i < len(text); i++ {
-		if text[i] != '{' {
-			continue
-		}
-
-		// Try to parse a JSON object starting here
-		end := findJSONObject(text[i:])
-		if end == -1 {
-			continue
-		}
-
-		jsonStr := text[i : i+end]
-		var obj map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(jsonStr), &obj); err != nil {
-			continue
-		}
-
-		// Check if this looks like a tool call
-		for param, toolName := range paramToTool {
-			if rawVal, ok := obj[param]; ok {
-				var val string
-				if err := json.Unmarshal(rawVal, &val); err == nil {
-					// Check if the tool exists in registry
-					if _, ok := a.registry.Get(toolName); ok {
-						input, _ := json.Marshal(map[string]string{param: val})
-						calls = append(calls, provider.ToolCallEvent{
-							ID:    a.nextCallID(),
-							Name:  toolName,
-							Input: input,
-						})
-						break
-					}
-				}
-			}
-		}
-
-		i += end - 1
-	}
-
-	return calls
-}
-
-// findJSONObject finds the end index of a JSON object starting at pos 0.
-func findJSONObject(s string) int {
-	if len(s) == 0 || s[0] != '{' {
-		return -1
-	}
-
-	depth := 0
-	inString := false
-	escape := false
-
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-
-		if escape {
-			escape = false
-			continue
-		}
-
-		if c == '\\' && inString {
-			escape = true
-			continue
-		}
-
-		if c == '"' {
-			inString = !inString
-			continue
-		}
-
-		if inString {
-			continue
-		}
-
-		switch c {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return i + 1
-			}
-		}
-	}
-
-	return -1
-}
-
-// stripInlineJSON removes inline JSON objects from text.
-func (a *Agent) stripInlineJSON(text string) string {
-	result := text
-	for {
-		start := strings.Index(result, "{")
-		if start == -1 {
-			break
-		}
-		end := findJSONObject(result[start:])
-		if end == -1 {
-			break
-		}
-		result = result[:start] + result[start+end:]
-	}
-	return strings.TrimSpace(result)
-}
-
-func (a *Agent) resolveToolInputs(calls []provider.ToolCallEvent, bufs map[string]string) []provider.ToolCallEvent {
+func (a *Agent) resolveToolInputs(calls []provider.ToolCallEvent) []provider.ToolCallEvent {
 	out := make([]provider.ToolCallEvent, len(calls))
 	for i, tc := range calls {
 		input := tc.Input
-		if input == nil && bufs[tc.ID] != "" {
-			input = json.RawMessage(bufs[tc.ID])
-		}
 		if input == nil {
 			input = json.RawMessage("{}")
 		}
