@@ -6,32 +6,32 @@ import (
 
 type Theme struct {
 	// Brand
-	Brand       lipgloss.Style
-	BrandLight  lipgloss.Style
-	BrandDim    lipgloss.Style
-	BrandGlow   lipgloss.Style
+	Brand      lipgloss.Style
+	BrandLight lipgloss.Style
+	BrandDim   lipgloss.Style
+	BrandGlow  lipgloss.Style
 
 	// Text
-	Text       lipgloss.Style
-	Dim        lipgloss.Style
-	Bold       lipgloss.Style
-	Subtle     lipgloss.Style
-	Italic     lipgloss.Style
+	Text   lipgloss.Style
+	Dim    lipgloss.Style
+	Bold   lipgloss.Style
+	Subtle lipgloss.Style
+	Italic lipgloss.Style
 
 	// Assistant
-	AssistantDot lipgloss.Style
+	AssistantDot  lipgloss.Style
 	AssistantIcon lipgloss.Style
 
 	// Tool entries
-	ToolIcon      lipgloss.Style
-	ToolName      lipgloss.Style
-	ToolArgs      lipgloss.Style
-	ToolDot       lipgloss.Style
-	ToolSuccess   lipgloss.Style
-	ToolError     lipgloss.Style
-	ToolRunning   lipgloss.Style
-	ToolDuration  lipgloss.Style
-	ToolBorder    lipgloss.Style
+	ToolIcon     lipgloss.Style
+	ToolName     lipgloss.Style
+	ToolArgs     lipgloss.Style
+	ToolDot      lipgloss.Style
+	ToolSuccess  lipgloss.Style
+	ToolError    lipgloss.Style
+	ToolRunning  lipgloss.Style
+	ToolDuration lipgloss.Style
+	ToolBorder   lipgloss.Style
 
 	// User
 	UserPointer lipgloss.Style
@@ -44,26 +44,36 @@ type Theme struct {
 	Warning lipgloss.Style
 	Info    lipgloss.Style
 
+	// Diff colors
+	DiffAdd        lipgloss.Style // added line foreground
+	DiffRemove     lipgloss.Style // removed line foreground
+	DiffAddBg      lipgloss.Style // added line background
+	DiffRemoveBg   lipgloss.Style // removed line background
+	DiffAddWord    lipgloss.Style // word-level addition highlight
+	DiffRemoveWord lipgloss.Style // word-level removal highlight
+	DiffLineNum    lipgloss.Style // line numbers
+	DiffMarker     lipgloss.Style // +/- prefix
+
 	// Prompt / Input
-	PromptChar    lipgloss.Style
-	PromptBorder  lipgloss.Style
-	PromptActive  lipgloss.Style
-	InverseCursor lipgloss.Style
-	InputHint     lipgloss.Style
-	InputLabel    lipgloss.Style
+	PromptChar     lipgloss.Style
+	PromptBorder   lipgloss.Style
+	PromptActive   lipgloss.Style
+	InverseCursor  lipgloss.Style
+	InputHint      lipgloss.Style
+	InputLabel     lipgloss.Style
 	InputBorderDim lipgloss.Style
-	Separator     lipgloss.Style
+	Separator      lipgloss.Style
 
 	// Suggestions
-	Suggestion      lipgloss.Style
-	SuggestionKey   lipgloss.Style
-	SuggestionDesc  lipgloss.Style
+	Suggestion     lipgloss.Style
+	SuggestionKey  lipgloss.Style
+	SuggestionDesc lipgloss.Style
 
 	// Status bar
-	StatusBar       lipgloss.Style
-	StatusBarBrand  lipgloss.Style
-	StatusBarInfo   lipgloss.Style
-	StatusBarDim    lipgloss.Style
+	StatusBar      lipgloss.Style
+	StatusBarBrand lipgloss.Style
+	StatusBarInfo  lipgloss.Style
+	StatusBarDim   lipgloss.Style
 
 	// Welcome screen
 	WelcomeTitle    lipgloss.Style
@@ -88,11 +98,11 @@ func DefaultTheme() Theme {
 		BrandGlow:  lipgloss.NewStyle().Foreground(brandGlow),
 
 		// Text
-		Text:    lipgloss.NewStyle().Foreground(lipgloss.Color("#E0E0E0")),
-		Dim:     lipgloss.NewStyle().Foreground(lipgloss.Color("#6B6B6B")),
-		Bold:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")),
-		Subtle:  lipgloss.NewStyle().Foreground(lipgloss.Color("#404040")),
-		Italic:  lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#A0A0A0")),
+		Text:   lipgloss.NewStyle().Foreground(lipgloss.Color("#E0E0E0")),
+		Dim:    lipgloss.NewStyle().Foreground(lipgloss.Color("#6B6B6B")),
+		Bold:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")),
+		Subtle: lipgloss.NewStyle().Foreground(lipgloss.Color("#404040")),
+		Italic: lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#A0A0A0")),
 
 		// Assistant
 		AssistantDot:  lipgloss.NewStyle().Foreground(brand),
@@ -120,15 +130,25 @@ func DefaultTheme() Theme {
 		Warning: lipgloss.NewStyle().Foreground(lipgloss.Color("#FFC107")),
 		Info:    lipgloss.NewStyle().Foreground(lipgloss.Color("#6CB4EE")),
 
+		// Diff colors (from Claude Code dark theme palette)
+		DiffAdd:        lipgloss.NewStyle().Foreground(lipgloss.Color("#4EBA65")),
+		DiffRemove:     lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B80")),
+		DiffAddBg:      lipgloss.NewStyle().Foreground(lipgloss.Color("#56D364")).Background(lipgloss.Color("#1A2E1A")),
+		DiffRemoveBg:   lipgloss.NewStyle().Foreground(lipgloss.Color("#FF7B72")).Background(lipgloss.Color("#2E1A1A")),
+		DiffAddWord:    lipgloss.NewStyle().Foreground(lipgloss.Color("#38A660")),
+		DiffRemoveWord: lipgloss.NewStyle().Foreground(lipgloss.Color("#B3596B")),
+		DiffLineNum:    lipgloss.NewStyle().Foreground(lipgloss.Color("#555555")),
+		DiffMarker:     lipgloss.NewStyle().Bold(true),
+
 		// Prompt / Input
-		PromptChar:    lipgloss.NewStyle().Foreground(brand).Bold(true),
-		PromptBorder:  lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")),
-		PromptActive:  lipgloss.NewStyle().Foreground(brand),
-		InverseCursor: lipgloss.NewStyle().Background(lipgloss.Color("#FFFFFF")).Foreground(lipgloss.Color("#000000")),
-		InputHint:     lipgloss.NewStyle().Foreground(lipgloss.Color("#555555")),
-		InputLabel:    lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")),
+		PromptChar:     lipgloss.NewStyle().Foreground(brand).Bold(true),
+		PromptBorder:   lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")),
+		PromptActive:   lipgloss.NewStyle().Foreground(brand),
+		InverseCursor:  lipgloss.NewStyle().Background(lipgloss.Color("#FFFFFF")).Foreground(lipgloss.Color("#000000")),
+		InputHint:      lipgloss.NewStyle().Foreground(lipgloss.Color("#555555")),
+		InputLabel:     lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")),
 		InputBorderDim: lipgloss.NewStyle().Foreground(lipgloss.Color("#333333")),
-		Separator:     lipgloss.NewStyle().Foreground(lipgloss.Color("#2E2E2E")),
+		Separator:      lipgloss.NewStyle().Foreground(lipgloss.Color("#2E2E2E")),
 
 		// Suggestions
 		Suggestion:     lipgloss.NewStyle().Foreground(lipgloss.Color("#B1B9F9")),

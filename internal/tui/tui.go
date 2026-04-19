@@ -110,12 +110,14 @@ type toolEntry struct {
 	Name     string
 	Label    string
 	Args     string
+	Input    json.RawMessage
 	State    toolState
 	Started  time.Time
 	Finished time.Time
 	Summary  string
 	Preview  []string
 	ErrText  string
+	IsDiff   bool // true when Preview contains styled diff lines
 }
 
 type responseMsg struct{ chunk string }
@@ -603,10 +605,26 @@ func (m *Model) renderToolEntry(tool toolEntry) string {
 		}
 		if len(tool.Preview) > 0 {
 			b.WriteString("\n")
-			b.WriteString(renderNestedBlock(
-				[]string{m.theme.Dim.Render("ctrl+o to expand")},
-				m.theme.Subtle.Render("  "+toolPointer+"  "),
-			))
+			if tool.IsDiff {
+				// Show first few diff lines inline in collapsed view
+				maxShow := 8
+				showLines := tool.Preview
+				if len(showLines) > maxShow {
+					showLines = showLines[:maxShow]
+				}
+				b.WriteString(renderNestedBlock(showLines, m.theme.Subtle.Render("  "+toolPointer+"  ")))
+				if len(tool.Preview) > maxShow {
+					b.WriteString(renderNestedBlock(
+						[]string{m.theme.Dim.Render(fmt.Sprintf("ctrl+o to expand (%d more lines)", len(tool.Preview)-maxShow))},
+						m.theme.Subtle.Render("  "+toolPointer+"  "),
+					))
+				}
+			} else {
+				b.WriteString(renderNestedBlock(
+					[]string{m.theme.Dim.Render("ctrl+o to expand")},
+					m.theme.Subtle.Render("  "+toolPointer+"  "),
+				))
+			}
 		}
 		return strings.TrimRight(b.String(), "\n")
 	}
@@ -615,7 +633,11 @@ func (m *Model) renderToolEntry(tool toolEntry) string {
 	bodyLines := make([]string, 0, len(tool.Preview)+1)
 
 	for _, line := range tool.Preview {
-		bodyLines = append(bodyLines, m.theme.Dim.Render(line))
+		if tool.IsDiff {
+			bodyLines = append(bodyLines, line) // already styled by formatDiffPreview
+		} else {
+			bodyLines = append(bodyLines, m.theme.Dim.Render(line))
+		}
 	}
 
 	if tool.State == toolFailed {
@@ -801,6 +823,7 @@ func (m *Model) addToolEntry(name, id string, input json.RawMessage) {
 			Name:    name,
 			Label:   label,
 			Args:    args,
+			Input:   input,
 			State:   toolRunning,
 			Started: time.Now(),
 		},
@@ -829,6 +852,22 @@ func (m *Model) completeToolEntry(id, output string, err error, started time.Tim
 	entry.tool.Started = started
 	entry.tool.Finished = time.Now()
 	entry.tool.Summary, entry.tool.Preview = summarizeToolResult(entry.tool.Name, output, err)
+
+	// For edit_file: compute styled diff preview
+	if entry.tool.Name == "edit_file" && err == nil && len(entry.tool.Input) > 0 {
+		var editOut struct {
+			Path      string `json:"path"`
+			OldString string `json:"old_string"`
+			NewString string `json:"new_string"`
+		}
+		if json.Unmarshal([]byte(output), &editOut) == nil && editOut.OldString != editOut.NewString {
+			summary, preview := formatDiffPreview(editOut.OldString, editOut.NewString, m.theme, m.transcriptWidth(), editOut.Path)
+			entry.tool.Summary = summary
+			entry.tool.Preview = preview
+			entry.tool.IsDiff = len(preview) > 0
+		}
+	}
+
 	if err != nil {
 		entry.tool.State = toolFailed
 		entry.tool.ErrText = err.Error()

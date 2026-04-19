@@ -19,9 +19,9 @@ func (EditFile) Description() string {
 
 func (EditFile) Parameters() json.RawMessage {
 	return schema(map[string]any{
-		"path":        map[string]any{"type": "string", "description": "Path to the file"},
-		"old_string":  map[string]any{"type": "string", "description": "Exact string to find"},
-		"new_string":  map[string]any{"type": "string", "description": "String to replace with"},
+		"path":       map[string]any{"type": "string", "description": "Path to the file"},
+		"old_string": map[string]any{"type": "string", "description": "Exact string to find"},
+		"new_string": map[string]any{"type": "string", "description": "String to replace with"},
 	}, "path", "old_string", "new_string")
 }
 
@@ -63,5 +63,9 @@ func (EditFile) Execute(ctx context.Context, input json.RawMessage) (json.RawMes
 		return nil, fmt.Errorf("write file: %w", err)
 	}
 
-	return json.Marshal(fmt.Sprintf("Edited %s: replaced 1 occurrence", in.Path))
+	return json.Marshal(map[string]any{
+		"path":       in.Path,
+		"old_string": in.OldString,
+		"new_string": in.NewString,
+	})
 }
