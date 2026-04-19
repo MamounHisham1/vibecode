@@ -135,6 +135,16 @@ func buildToolRegistry() *tool.Registry {
 	reg.Register(tool.Git{})
 	reg.Register(tool.WebFetch{})
 	reg.Register(tool.AskUser{})
+
+	// Web search (optional, requires API key)
+	if searchKey := os.Getenv("VIBECODE_SEARCH_API_KEY"); searchKey != "" {
+		searchProvider := os.Getenv("VIBECODE_SEARCH_PROVIDER")
+		if searchProvider == "" {
+			searchProvider = "brave"
+		}
+		reg.Register(tool.NewWebSearch(searchKey, searchProvider))
+	}
+
 	return reg
 }
 
