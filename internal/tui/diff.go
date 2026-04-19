@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // DiffLine represents a single line in a diff.
@@ -146,6 +146,13 @@ func renderDiffLines(lines []DiffLine, theme Theme, width int, filePath string) 
 	}
 	numWidth := len(fmt.Sprintf("%d", maxNum))
 
+	// Account for the fixed-width prefix: "NNN +/- " = numWidth + 3 visual chars
+	prefixWidth := numWidth + 3 // lineNum + marker + space
+	contentWidth := width - prefixWidth
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+
 	// Render up to maxLines diff lines
 	maxLines := 25
 	lineCount := 0
@@ -160,39 +167,67 @@ func renderDiffLines(lines []DiffLine, theme Theme, width int, filePath string) 
 		var lineNumStr string
 		switch l.Kind {
 		case "remove":
-			lineNumStr = fmt.Sprintf("%*d ", numWidth, l.OldNum)
+			lineNumStr = fmt.Sprintf("%*d", numWidth, l.OldNum)
 		case "add":
-			lineNumStr = fmt.Sprintf("%*d ", numWidth, l.NewNum)
+			lineNumStr = fmt.Sprintf("%*d", numWidth, l.NewNum)
 		default:
-			lineNumStr = fmt.Sprintf("%*d ", numWidth, l.OldNum)
+			lineNumStr = fmt.Sprintf("%*d", numWidth, l.OldNum)
 		}
 
 		var marker, styledText string
 		switch l.Kind {
 		case "remove":
-			marker = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF7B72")).Bold(true).Render("-")
-			styledText = theme.DiffRemoveBg.Render(l.Text)
+			marker = theme.DiffRemove.Render("-")
+			styledText = theme.DiffRemove.Render(truncateVisual(l.Text, contentWidth))
 		case "add":
-			marker = lipgloss.NewStyle().Foreground(lipgloss.Color("#56D364")).Bold(true).Render("+")
-			styledText = theme.DiffAddBg.Render(l.Text)
+			marker = theme.DiffAdd.Render("+")
+			styledText = theme.DiffAdd.Render(truncateVisual(l.Text, contentWidth))
 		default:
 			marker = " "
-			styledText = theme.Text.Render(l.Text)
+			styledText = theme.Text.Render(truncateVisual(l.Text, contentWidth))
 		}
 
 		numField := theme.DiffLineNum.Render(lineNumStr)
-		rendered := numField + marker + " " + styledText
-
-		// Truncate to fit width
-		if width > 0 && len(rendered) > width {
-			rendered = rendered[:width]
-		}
+		rendered := numField + " " + marker + " " + styledText
 
 		preview = append(preview, rendered)
 		lineCount++
 	}
 
 	return summary, preview, added, removed
+}
+
+// truncateVisual truncates a string to fit within maxVisual characters,
+// preserving ANSI escape codes.
+func truncateVisual(s string, maxVisual int) string {
+	w := ansi.StringWidth(s)
+	if w <= maxVisual {
+		return s
+	}
+	runes := []rune(s)
+	var result strings.Builder
+	visual := 0
+	inEscape := false
+	for _, r := range runes {
+		if r == '\x1b' {
+			inEscape = true
+			result.WriteRune(r)
+			continue
+		}
+		if inEscape {
+			result.WriteRune(r)
+			if r == 'm' {
+				inEscape = false
+			}
+			continue
+		}
+		if visual >= maxVisual {
+			break
+		}
+		result.WriteRune(r)
+		visual++
+	}
+	return result.String()
 }
 
 // formatDiffPreview is the public entry point for creating diff preview content.

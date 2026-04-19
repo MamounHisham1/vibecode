@@ -14,7 +14,7 @@ type EditFile struct{}
 func (EditFile) Name() string { return "edit_file" }
 
 func (EditFile) Description() string {
-	return "Replace exact string matches in a file. Use for targeted edits."
+	return "Make targeted edits to an existing file by replacing an exact string match. PREFERRED over write_file for modifying existing files — this preserves unchanged content and shows a clean diff."
 }
 
 func (EditFile) Parameters() json.RawMessage {
@@ -64,8 +64,8 @@ func (EditFile) Execute(ctx context.Context, input json.RawMessage) (json.RawMes
 	}
 
 	return json.Marshal(map[string]any{
-		"path":       in.Path,
-		"old_string": in.OldString,
-		"new_string": in.NewString,
+		"output":  fmt.Sprintf("Edited %s: replaced 1 occurrence", in.Path),
+		"path":    in.Path,
+		"changed": true,
 	})
 }

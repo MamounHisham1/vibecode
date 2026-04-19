@@ -13,7 +13,7 @@ type WriteFile struct{}
 func (WriteFile) Name() string { return "write_file" }
 
 func (WriteFile) Description() string {
-	return "Create or overwrite a file with the given content."
+	return "Create a new file or completely rewrite an existing file. IMPORTANT: Prefer edit_file for modifying existing files — only use write_file when creating a brand new file or when a full rewrite is needed."
 }
 
 func (WriteFile) Parameters() json.RawMessage {
@@ -39,6 +39,12 @@ func (WriteFile) Execute(ctx context.Context, input json.RawMessage) (json.RawMe
 		return nil, fmt.Errorf("resolve path: %w", err)
 	}
 
+	// Read existing content for diff (if file exists)
+	var oldContent string
+	if data, err := os.ReadFile(abs); err == nil {
+		oldContent = string(data)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
 		return nil, fmt.Errorf("create directories: %w", err)
 	}
@@ -47,5 +53,10 @@ func (WriteFile) Execute(ctx context.Context, input json.RawMessage) (json.RawMe
 		return nil, fmt.Errorf("write file: %w", err)
 	}
 
-	return json.Marshal(fmt.Sprintf("Wrote %d bytes to %s", len(in.Content), in.Path))
+	return json.Marshal(map[string]any{
+		"output":      fmt.Sprintf("Wrote %d bytes to %s", len(in.Content), in.Path),
+		"path":        in.Path,
+		"old_content": oldContent,
+		"new_content": in.Content,
+	})
 }

@@ -853,18 +853,38 @@ func (m *Model) completeToolEntry(id, output string, err error, started time.Tim
 	entry.tool.Finished = time.Now()
 	entry.tool.Summary, entry.tool.Preview = summarizeToolResult(entry.tool.Name, output, err)
 
-	// For edit_file: compute styled diff preview
-	if entry.tool.Name == "edit_file" && err == nil && len(entry.tool.Input) > 0 {
-		var editOut struct {
-			Path      string `json:"path"`
-			OldString string `json:"old_string"`
-			NewString string `json:"new_string"`
-		}
-		if json.Unmarshal([]byte(output), &editOut) == nil && editOut.OldString != editOut.NewString {
-			summary, preview := formatDiffPreview(editOut.OldString, editOut.NewString, m.theme, m.transcriptWidth(), editOut.Path)
-			entry.tool.Summary = summary
-			entry.tool.Preview = preview
-			entry.tool.IsDiff = len(preview) > 0
+	// Compute diff preview for file-modifying tools
+	if err == nil {
+		switch entry.tool.Name {
+		case "edit_file":
+			// Diff from tool INPUT (has old_string / new_string)
+			if len(entry.tool.Input) > 0 {
+				var editIn struct {
+					Path      string `json:"path"`
+					OldString string `json:"old_string"`
+					NewString string `json:"new_string"`
+				}
+				if json.Unmarshal(entry.tool.Input, &editIn) == nil && editIn.OldString != editIn.NewString {
+					summary, preview := formatDiffPreview(editIn.OldString, editIn.NewString, m.theme, m.transcriptWidth(), editIn.Path)
+					entry.tool.Summary = summary
+					entry.tool.Preview = preview
+					entry.tool.IsDiff = len(preview) > 0
+				}
+			}
+
+		case "write_file":
+			// Diff from tool OUTPUT (has old_content / new_content)
+			var writeOut struct {
+				Path       string `json:"path"`
+				OldContent string `json:"old_content"`
+				NewContent string `json:"new_content"`
+			}
+			if json.Unmarshal([]byte(output), &writeOut) == nil && writeOut.OldContent != writeOut.NewContent {
+				summary, preview := formatDiffPreview(writeOut.OldContent, writeOut.NewContent, m.theme, m.transcriptWidth(), writeOut.Path)
+				entry.tool.Summary = summary
+				entry.tool.Preview = preview
+				entry.tool.IsDiff = len(preview) > 0
+			}
 		}
 	}
 
