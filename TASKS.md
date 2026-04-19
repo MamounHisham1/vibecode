@@ -134,7 +134,7 @@ IMPORTANT: Please read the refrence at @../../sites/cluade-code, this is the ai 
   - File: `internal/tui/tui.go`
 
 ### Configuration
-- [ ] **Config subcommand** — `vibecode config set provider ollama`, `vibecode config get model`
+- [x] **Config subcommand** — `vibecode config set provider ollama`, `vibecode config get model`
   - Get/set/list operations
   - Validate values
   - File: new cobra subcommand in `cmd/vibecode/main.go`

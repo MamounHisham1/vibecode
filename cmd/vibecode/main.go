@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -45,6 +46,9 @@ func main() {
 
 	rootCmd.Flags().StringVar(&flagProvider, "provider", "", "LLM provider (anthropic, openai, deepseek, kimi, moonshot, zhipu, qwen, ollama)")
 	rootCmd.Flags().StringVar(&flagModel, "model", "", "Model name to use")
+
+	// Config subcommand
+	rootCmd.AddCommand(buildConfigCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -593,4 +597,123 @@ func buildHooks(cfg *config.Config) *hooks.Manager {
 		hm.LoadFromConfig(cfg.Hooks)
 	}
 	return hm
+}
+
+func buildConfigCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Manage VibeCode configuration",
+	}
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "get <key>",
+		Short: "Get a config value",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			val, err := getConfigValue(cfg, args[0])
+			if err != nil {
+				return err
+			}
+			fmt.Println(val)
+			return nil
+		},
+	})
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "set <key> <value>",
+		Short: "Set a config value",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			if err := setConfigValue(cfg, args[0], args[1]); err != nil {
+				return err
+			}
+			return cfg.Save()
+		},
+	})
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List all config values",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			data, _ := json.MarshalIndent(cfg, "", "  ")
+			fmt.Println(string(data))
+			return nil
+		},
+	})
+
+	return cmd
+}
+
+var validConfigKeys = []string{
+	"provider", "model", "base_url", "max_iterations", "theme", "context_window",
+}
+
+func getConfigValue(cfg *config.Config, key string) (string, error) {
+	switch key {
+	case "provider":
+		return cfg.Provider, nil
+	case "model":
+		return cfg.Model, nil
+	case "base_url":
+		return cfg.BaseURL, nil
+	case "max_iterations":
+		return fmt.Sprintf("%d", cfg.MaxIterations), nil
+	case "theme":
+		return cfg.Theme, nil
+	case "context_window":
+		return fmt.Sprintf("%d", cfg.ContextWindow), nil
+	default:
+		return "", fmt.Errorf("unknown config key: %s (valid: %s)", key, strings.Join(validConfigKeys, ", "))
+	}
+}
+
+func setConfigValue(cfg *config.Config, key, value string) error {
+	switch key {
+	case "provider":
+		validProviders := []string{"anthropic", "openai", "deepseek", "kimi", "moonshot", "zhipu", "qwen", "ollama"}
+		for _, p := range validProviders {
+			if p == value {
+				cfg.Provider = value
+				return nil
+			}
+		}
+		return fmt.Errorf("invalid provider: %s (valid: %s)", value, strings.Join(validProviders, ", "))
+	case "model":
+		cfg.Model = value
+		return nil
+	case "base_url":
+		cfg.BaseURL = value
+		return nil
+	case "max_iterations":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("max_iterations must be a number")
+		}
+		cfg.MaxIterations = n
+		return nil
+	case "theme":
+		cfg.Theme = value
+		return nil
+	case "context_window":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("context_window must be a number")
+		}
+		cfg.ContextWindow = n
+		return nil
+	default:
+		return fmt.Errorf("unknown config key: %s (valid: %s)", key, strings.Join(validConfigKeys, ", "))
+	}
 }
