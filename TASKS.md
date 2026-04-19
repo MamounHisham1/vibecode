@@ -156,7 +156,7 @@ IMPORTANT: Please read the refrence at @../../sites/cluade-code, this is the ai 
 ## MEDIUM — Important for Quality & Usability
 
 ### Plan Mode
-- [ ] **Enter/exit plan mode** — Toggle between execution and planning modes
+- [x] **Enter/exit plan mode** — Toggle between execution and planning modes
   - In plan mode: read-only tools only, no file modifications
   - Plan file persisted at `.vibecode/plans/`
   - Visual indicator in status bar

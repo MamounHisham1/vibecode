@@ -143,6 +143,8 @@ func buildToolRegistry() *tool.Registry {
 	reg.Register(tool.WebFetch{})
 	reg.Register(tool.AskUserStdin())
 	reg.Register(&tool.TodoWrite{})
+	reg.Register(tool.EnterPlanMode{})
+	reg.Register(tool.ExitPlanMode{})
 
 	// Web search (optional, requires API key)
 	if searchKey := os.Getenv("VIBECODE_SEARCH_API_KEY"); searchKey != "" {

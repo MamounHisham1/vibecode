@@ -57,6 +57,9 @@ type Agent struct {
 	// Token tracking
 	tokens TokenTracker
 
+	// Plan mode
+	planMode bool
+
 	// Compaction
 	contextWindow    int
 	compactThreshold float64 // fraction of context window (e.g. 0.80)
@@ -222,6 +225,32 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 
 				a.cb.OnToolStart(call.Name, call.ID, call.Input)
 
+				// Plan mode enforcement
+				a.mu.Lock()
+				pm := a.planMode
+				a.mu.Unlock()
+				if pm && isWriteTool(call.Name) {
+					output := fmt.Sprintf("blocked: %s is not available in plan mode (read-only)", call.Name)
+					a.cb.OnToolOutput(call.Name, call.ID, output, fmt.Errorf("plan mode: %s blocked", call.Name))
+					histMu.Lock()
+					toolResults = append(toolResults, provider.ToolResultMessage(
+						call.ID, json.RawMessage(fmt.Sprintf(`"plan mode: %s is read-only"`, call.Name)), true,
+					))
+					histMu.Unlock()
+					return
+				}
+
+				// Check for plan mode toggle tools
+				if call.Name == "enter_plan_mode" {
+					a.mu.Lock()
+					a.planMode = true
+					a.mu.Unlock()
+				} else if call.Name == "exit_plan_mode" {
+					a.mu.Lock()
+					a.planMode = false
+					a.mu.Unlock()
+				}
+
 				// PreToolUse hook
 				if a.hooks != nil {
 					hookResult := a.hooks.Run(ctx, hooks.Input{
@@ -355,6 +384,23 @@ func (a *Agent) estimateAndReportTokens(req provider.Request, responseText strin
 	a.tokens.Add(inputEst, outputEst)
 	a.mu.Unlock()
 	a.cb.OnEstimatedUsage(inputEst, outputEst)
+}
+
+// isWriteTool returns true for tools that modify files or system state.
+func isWriteTool(name string) bool {
+	switch name {
+	case "write_file", "edit_file", "shell", "git", "notebook_edit", "ask_user", "todo_write":
+		return true
+	default:
+		return false
+	}
+}
+
+// PlanModeActive returns whether the agent is in plan mode.
+func (a *Agent) PlanModeActive() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.planMode
 }
 
 func (a *Agent) buildToolDefs() []provider.ToolDef {

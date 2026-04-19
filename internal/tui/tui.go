@@ -109,6 +109,9 @@ type Model struct {
 
 	// Per-tool expand/collapse: maps tool ID to its start line in the rendered view
 	toolStartLines map[string]int
+
+	// Plan mode
+	planMode bool
 }
 
 type transcriptItem struct {
@@ -164,6 +167,10 @@ type askQuestionMsg struct {
 	question string
 	options  []string
 	answer   chan string
+}
+
+type planModeMsg struct {
+	active bool
 }
 
 // ─── Constructor ────────────────────────────────────────────────
@@ -382,6 +389,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.waiting = false
 		m.input.SetWaiting(false)
 		return m, nil
+
+	case planModeMsg:
+		m.planMode = msg.active
+		return m, nil
 	}
 
 	return m, nil
@@ -546,6 +557,10 @@ func (m *Model) renderStatusBar() string {
 
 	// Left side: brand + model + directory
 	left := " " + t.StatusBarBrand.Render("vibe code")
+
+	if m.planMode {
+		left += t.StatusBarBrand.Render(" PLAN MODE")
+	}
 
 	if m.status != "" {
 		left += t.StatusBarInfo.Render(" " + m.status)
@@ -1082,6 +1097,13 @@ func (c *TUICallback) OnToolOutput(name, id, output string, err error) {
 	delete(c.startTimes, id)
 	c.mu.Unlock()
 	c.program.Send(toolDoneMsg{name: name, id: id, output: output, err: err, started: started})
+
+	// Detect plan mode changes
+	if name == "enter_plan_mode" && err == nil {
+		c.program.Send(planModeMsg{active: true})
+	} else if name == "exit_plan_mode" && err == nil {
+		c.program.Send(planModeMsg{active: false})
+	}
 }
 
 func (c *TUICallback) OnDone() {
