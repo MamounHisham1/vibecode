@@ -17,6 +17,7 @@ import (
 
 	"github.com/vibecode/vibecode/config"
 	"github.com/vibecode/vibecode/internal/agent"
+	"github.com/vibecode/vibecode/internal/commands"
 	"github.com/vibecode/vibecode/internal/hooks"
 	"github.com/vibecode/vibecode/internal/provider"
 	"github.com/vibecode/vibecode/internal/skills"
@@ -409,6 +410,25 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 
 	m := tui.New(inputChan)
 	m.SetStatus(cfg.Model, dir)
+
+	// Wire slash commands
+	cmdReg := commands.NewRegistry()
+	m.SetCommandHandler(func(cmdName, args string) (string, bool) {
+		cmd, ok := cmdReg.Lookup(cmdName)
+		if !ok {
+			return fmt.Sprintf("Unknown command: /%s. Type /help for available commands.", cmdName), false
+		}
+		switch cmd.Type {
+		case commands.TypeLocal:
+			result := cmd.Handler(args)
+			return result.Output, result.Clear
+		case commands.TypePrompt:
+			inputChan <- cmd.PromptText
+			return "", false
+		default:
+			return "", false
+		}
+	})
 
 	pgm := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 

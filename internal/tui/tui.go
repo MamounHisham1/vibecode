@@ -96,6 +96,9 @@ type Model struct {
 	// Cancellation
 	cancelFunc  context.CancelFunc
 	interruptCh chan struct{}
+
+	// Command handler
+	commandHandler func(cmdName, args string) (string, bool) // returns (output, clearHistory)
 }
 
 type transcriptItem struct {
@@ -234,6 +237,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'\n'}})
 				return m, nil
 			}
+
+			// Check for slash commands
+			if strings.HasPrefix(strings.TrimSpace(raw), "/") && m.commandHandler != nil {
+				parts := strings.SplitN(strings.TrimSpace(raw)[1:], " ", 2)
+				cmdName := parts[0]
+				cmdArgs := ""
+				if len(parts) > 1 {
+					cmdArgs = parts[1]
+				}
+				output, clearHist := m.commandHandler(cmdName, cmdArgs)
+				m.input.Reset()
+				m.welcome = false
+				if output != "" {
+					m.appendSystemMessage(output, false)
+				}
+				if clearHist {
+					m.entries = nil
+				}
+				return m, nil
+			}
+
 			m.appendUserMessage(raw)
 			m.input.Reset()
 			m.scrollOffset = 0
@@ -950,6 +974,11 @@ func (m *Model) transcriptWidth() int {
 
 func (m *Model) inputTextWidth() int {
 	return min(max(m.width-6, 20), 112)
+}
+
+// SetCommandHandler sets the handler for slash commands.
+func (m *Model) SetCommandHandler(fn func(cmdName, args string) (output string, clearHistory bool)) {
+	m.commandHandler = fn
 }
 
 // ─── Callback ───────────────────────────────────────────────────
