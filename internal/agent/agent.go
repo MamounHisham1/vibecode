@@ -19,6 +19,23 @@ type Callback interface {
 	OnToolOutput(name, id string, output string, err error)
 	OnDone()
 	OnError(err error)
+	OnCompact(summary string)
+	OnUsage(inputTokens, outputTokens int)
+}
+
+// TokenTracker accumulates token counts from provider responses.
+type TokenTracker struct {
+	InputTokens  int
+	OutputTokens int
+}
+
+func (t *TokenTracker) Add(input, output int) {
+	t.InputTokens += input
+	t.OutputTokens += output
+}
+
+func (t *TokenTracker) Total() int {
+	return t.InputTokens + t.OutputTokens
 }
 
 type Agent struct {
@@ -31,6 +48,15 @@ type Agent struct {
 	cb          Callback
 	mu          sync.Mutex
 	callCounter int
+
+	// Token tracking
+	tokens TokenTracker
+
+	// Compaction
+	contextWindow    int
+	compactThreshold float64 // fraction of context window (e.g. 0.80)
+	compacting       bool
+	compactCount     int
 }
 
 func New(p provider.Provider, reg *tool.Registry, system string, maxIter int, autoApprove []string, cb Callback) *Agent {
@@ -40,13 +66,32 @@ func New(p provider.Provider, reg *tool.Registry, system string, maxIter int, au
 	}
 
 	return &Agent{
-		provider:    p,
-		registry:    reg,
-		system:      system,
-		maxIter:     maxIter,
-		autoApprove: aa,
-		cb:          cb,
+		provider:         p,
+		registry:         reg,
+		system:           system,
+		maxIter:          maxIter,
+		autoApprove:      aa,
+		cb:               cb,
+		contextWindow:    200000,
+		compactThreshold: 0.80,
 	}
+}
+
+// SetContextWindow sets the model's context window size in tokens.
+func (a *Agent) SetContextWindow(tokens int) {
+	a.contextWindow = tokens
+}
+
+// SetCompactThreshold sets the fraction of the context window at which auto-compact triggers.
+func (a *Agent) SetCompactThreshold(threshold float64) {
+	a.compactThreshold = threshold
+}
+
+// TokenUsage returns a snapshot of the accumulated token counts.
+func (a *Agent) TokenUsage() TokenTracker {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.tokens
 }
 
 func (a *Agent) nextCallID() string {
@@ -63,6 +108,16 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 	toolDefs := a.buildToolDefs()
 
 	for i := 0; i < a.maxIter; i++ {
+		// Check if auto-compact is needed before sending the request
+		if !a.compacting {
+			if shouldCompact, _ := a.checkAutoCompact(); shouldCompact {
+				log.Printf("Auto-compact triggered: history has grown beyond threshold")
+				if err := a.compactHistory(ctx); err != nil {
+					log.Printf("Auto-compact failed: %v", err)
+				}
+			}
+		}
+
 		req := provider.Request{
 			System:   a.system,
 			Messages: a.history,
@@ -105,6 +160,12 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 						toolInputBufs[id] = ""
 					}
 				}
+
+			case provider.UsageEvent:
+				a.mu.Lock()
+				a.tokens.Add(e.InputTokens, e.OutputTokens)
+				a.mu.Unlock()
+				a.cb.OnUsage(e.InputTokens, e.OutputTokens)
 
 			case provider.DoneEvent:
 				// Stream complete
@@ -188,6 +249,30 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 
 	a.cb.OnError(fmt.Errorf("max iterations (%d) reached", a.maxIter))
 	return fmt.Errorf("max iterations reached")
+}
+
+// Compact triggers a manual compaction of the conversation history.
+func (a *Agent) Compact(ctx context.Context) error {
+	return a.compactHistory(ctx)
+}
+
+// CompactHistory removes old messages keeping only the last N (legacy API).
+func (a *Agent) CompactHistory(keepLast int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if len(a.history) <= keepLast {
+		return
+	}
+
+	log.Printf("Compacting history: %d messages -> keeping last %d", len(a.history), keepLast)
+	a.history = a.history[len(a.history)-keepLast:]
+}
+
+func (a *Agent) History() []provider.Message {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.history
 }
 
 // parseInlineToolCalls detects inline JSON tool calls in text output.
@@ -337,22 +422,4 @@ func (a *Agent) buildToolDefs() []provider.ToolDef {
 		}
 	}
 	return defs
-}
-
-func (a *Agent) History() []provider.Message {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.history
-}
-
-func (a *Agent) CompactHistory(keepLast int) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if len(a.history) <= keepLast {
-		return
-	}
-
-	log.Printf("Compacting history: %d messages → keeping last %d", len(a.history), keepLast)
-	a.history = a.history[len(a.history)-keepLast:]
 }

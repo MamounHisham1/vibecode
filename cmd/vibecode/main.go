@@ -379,6 +379,9 @@ func runOneShot(message string, p provider.Provider, reg *tool.Registry, system 
 
 	cb := &cliCallback{}
 	a := agent.New(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb)
+	if cw := effectiveContextWindow(cfg); cw > 0 {
+		a.SetContextWindow(cw)
+	}
 	return a.Run(ctx, message)
 }
 
@@ -392,6 +395,9 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 
 	cb := tui.NewCallback(pgm)
 	a := agent.New(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb)
+	if cw := effectiveContextWindow(cfg); cw > 0 {
+		a.SetContextWindow(cw)
+	}
 
 	// Use a cancellable root context so SIGINT can exit the program.
 	// Per-turn cancellation is handled by giving each Run() its own child context.
@@ -454,4 +460,53 @@ func (c *cliCallback) OnError(err error) {
 		c.buf.Reset()
 	}
 	fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+}
+func (c *cliCallback) OnCompact(summary string) {
+	if c.buf.Len() > 0 {
+		fmt.Print(renderMarkdownCLI(c.buf.String()))
+		c.buf.Reset()
+	}
+	fmt.Println("ℹ Conversation compacted")
+}
+func (c *cliCallback) OnUsage(inputTokens, outputTokens int) {}
+
+// effectiveContextWindow returns the context window size for the configured model.
+// Falls back to defaults per provider if not explicitly set.
+func effectiveContextWindow(cfg *config.Config) int {
+	if cfg.ContextWindow > 0 {
+		return cfg.ContextWindow
+	}
+
+	// Default context windows per model family
+	model := strings.ToLower(cfg.Model)
+	switch {
+	case strings.Contains(model, "claude-3-5-sonnet"), strings.Contains(model, "claude-3.5-sonnet"):
+		return 200000
+	case strings.Contains(model, "claude-3-opus"), strings.Contains(model, "claude-3.5-opus"):
+		return 200000
+	case strings.Contains(model, "claude-3-haiku"):
+		return 200000
+	case strings.Contains(model, "claude-sonnet-4"), strings.Contains(model, "claude-sonnet-4-6"):
+		return 200000
+	case strings.Contains(model, "claude-opus-4"), strings.Contains(model, "claude-opus-4-7"):
+		return 200000
+	case strings.Contains(model, "claude"):
+		return 200000
+	case strings.Contains(model, "gpt-4o"), strings.Contains(model, "gpt-5"):
+		return 128000
+	case strings.Contains(model, "gpt-4-turbo"):
+		return 128000
+	case strings.Contains(model, "gpt-4"):
+		return 8192
+	case strings.Contains(model, "deepseek"):
+		return 64000
+	case strings.Contains(model, "moonshot"), strings.Contains(model, "kimi"):
+		return 8192
+	case strings.Contains(model, "qwen"):
+		return 32768
+	case strings.Contains(model, "glm"):
+		return 128000
+	default:
+		return 128000
+	}
 }

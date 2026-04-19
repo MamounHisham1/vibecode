@@ -15,6 +15,7 @@ type Config struct {
 	AutoApprove   []string          `json:"auto_approve"`
 	MaxIterations int               `json:"max_iterations"`
 	Theme         string            `json:"theme"`
+	ContextWindow int               `json:"context_window"`
 }
 
 func Default() *Config {

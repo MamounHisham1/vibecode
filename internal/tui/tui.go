@@ -17,11 +17,11 @@ import (
 )
 
 const (
-	assistantDot   = "◉"
-	userPointer    = "▸"
-	toolPointer    = "↳"
+	assistantDot = "◉"
+	userPointer  = "▸"
+	toolPointer  = "↳"
 	tickInterval = 80 * time.Millisecond
-	fadeFrames     = 12
+	fadeFrames   = 12
 )
 
 var spinnerVerbs = []string{
@@ -63,27 +63,27 @@ const (
 )
 
 type Model struct {
-	theme  Theme
-	input  InputModel
+	theme Theme
+	input InputModel
 
-	entries   []transcriptItem
-	streamBuf *strings.Builder
-	toolIndex map[string]int
-	status    string
-	modelName string
-	dir       string
-	quitting  bool
-	waiting   bool
-	welcome   bool
-	width     int
-	height    int
-	blinkOn   bool
+	entries      []transcriptItem
+	streamBuf    *strings.Builder
+	toolIndex    map[string]int
+	status       string
+	modelName    string
+	dir          string
+	quitting     bool
+	waiting      bool
+	welcome      bool
+	width        int
+	height       int
+	blinkOn      bool
 	scrollOffset int // lines scrolled up from bottom (0 = pinned)
-	verbIndex int
-	frameIndex int
-	inputChan  chan<- string
-	expanded   map[string]bool
-	ctrlOPress bool
+	verbIndex    int
+	frameIndex   int
+	inputChan    chan<- string
+	expanded     map[string]bool
+	ctrlOPress   bool
 
 	// Token/cost tracking
 	totalTokens int
@@ -138,6 +138,11 @@ type interruptMsg struct{}
 type doneMsg struct{}
 type errMsg struct{ err error }
 type tickMsg struct{}
+type compactMsg struct{}
+type usageMsg struct {
+	inputTokens  int
+	outputTokens int
+}
 
 // ─── Constructor ────────────────────────────────────────────────
 
@@ -310,6 +315,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWaiting(false)
 		m.toolIndex = make(map[string]int)
 		return m, nil
+
+	case compactMsg:
+		m.finalizeStream()
+		m.appendSystemMessage("Conversation compacted to free context window space", false)
+		return m, nil
+
+	case usageMsg:
+		m.totalTokens += msg.inputTokens + msg.outputTokens
+		m.lastTokens = msg.inputTokens + msg.outputTokens
+		return m, nil
 	}
 
 	return m, nil
@@ -454,9 +469,13 @@ func (m *Model) renderStatusBar() string {
 		left += t.StatusBarInfo.Render(" " + m.status)
 	}
 
-	// Right side: turn count + elapsed + hints
+	// Right side: token count + turn count + elapsed + hints
 	elapsed := time.Since(m.sessionStart).Round(time.Second)
 	right := ""
+	if m.totalTokens > 0 {
+		right += t.StatusBarDim.Render(fmt.Sprintf("%dk tokens", m.totalTokens/1000))
+		right += t.StatusBarDim.Render(" · ")
+	}
 	if m.turnCount > 0 {
 		right += t.StatusBarDim.Render(fmt.Sprintf("turn %d", m.turnCount))
 		right += t.StatusBarDim.Render(" · ")
@@ -914,6 +933,14 @@ func (c *TUICallback) OnDone() {
 
 func (c *TUICallback) OnError(err error) {
 	c.program.Send(errMsg{err: err})
+}
+
+func (c *TUICallback) OnCompact(summary string) {
+	c.program.Send(compactMsg{})
+}
+
+func (c *TUICallback) OnUsage(inputTokens, outputTokens int) {
+	c.program.Send(usageMsg{inputTokens: inputTokens, outputTokens: outputTokens})
 }
 
 // ─── Tool Summary ───────────────────────────────────────────────

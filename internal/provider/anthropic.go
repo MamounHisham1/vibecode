@@ -99,6 +99,11 @@ type anthropicSSE struct {
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
 	} `json:"message,omitempty"`
+
+	// For message_delta
+	Usage struct {
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage,omitempty"`
 }
 
 type anthropicDelta struct {
@@ -265,11 +270,24 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 		case "content_block_stop":
 			// Block complete
 
-		case "message_start", "message_delta", "message_stop":
-			if sse.Type == "message_stop" {
-				ch <- DoneEvent{}
-				return
+		case "message_start":
+			if sse.Message.Usage.InputTokens > 0 || sse.Message.Usage.OutputTokens > 0 {
+				ch <- UsageEvent{
+					InputTokens:  sse.Message.Usage.InputTokens,
+					OutputTokens: sse.Message.Usage.OutputTokens,
+				}
 			}
+
+		case "message_delta":
+			if sse.Usage.OutputTokens > 0 {
+				ch <- UsageEvent{
+					OutputTokens: sse.Usage.OutputTokens,
+				}
+			}
+
+		case "message_stop":
+			ch <- DoneEvent{}
+			return
 
 		case "ping":
 			// Keep alive, ignore
