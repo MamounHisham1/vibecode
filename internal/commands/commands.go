@@ -61,6 +61,7 @@ func (r *Registry) registerBuiltins() {
 	r.registerSkills()
 	r.registerUsage()
 	r.registerApprove()
+	r.registerProviders()
 }
 
 // Register adds a command to the registry.

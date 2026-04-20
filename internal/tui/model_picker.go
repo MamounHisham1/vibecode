@@ -48,7 +48,16 @@ func (mp *ModelPicker) SetSize(width, height int) {
 // currentProvider and currentModel are used to pre-select the active model.
 func (mp *ModelPicker) Open(currentProvider, currentModel string) {
 	mp.allItems = nil
-	for _, prov := range Providers() {
+	providers := Providers()
+	if providers == nil {
+		// Cache not populated yet — show empty picker
+		mp.items = nil
+		mp.searchQuery = ""
+		mp.selected = 0
+		mp.visible = true
+		return
+	}
+	for _, prov := range providers {
 		for _, m := range prov.Models {
 			mp.allItems = append(mp.allItems, modelPickerItem{
 				ProviderID:   prov.ID,
@@ -166,7 +175,11 @@ func (mp *ModelPicker) View() string {
 	b.WriteString(mp.theme.Separator.Render(strings.Repeat("─", innerWidth)) + "\n")
 
 	if len(mp.items) == 0 {
-		b.WriteString(mp.theme.Dim.Render("  No models match your search") + "\n")
+		if mp.searchQuery == "" {
+			b.WriteString(mp.theme.Dim.Render("  Loading providers...") + "\n")
+		} else {
+			b.WriteString(mp.theme.Dim.Render("  No models match your search") + "\n")
+		}
 	} else {
 		for i, item := range mp.items {
 			prefix := "   "

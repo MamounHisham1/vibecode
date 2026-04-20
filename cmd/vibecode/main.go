@@ -183,122 +183,44 @@ func makeSubagentRunner(getProvider func() provider.Provider, cfg *config.Config
 }
 
 func buildProvider(cfg *config.Config) (provider.Provider, error) {
-	switch cfg.Provider {
-	case "anthropic":
-		key := cfg.APIKey("anthropic")
-		if key == "" {
-			return nil, fmt.Errorf("set ANTHROPIC_API_KEY or run 'vibecode' to configure")
-		}
-		model := cfg.Model
-		if model == "" {
-			model = "claude-sonnet-4-6"
-		}
-		if cfg.BaseURL != "" {
-			return provider.NewAnthropicWithBaseURL(key, model, cfg.BaseURL), nil
-		}
-		return provider.NewAnthropic(key, model), nil
-
-	case "openai":
-		key := cfg.APIKey("openai")
-		if key == "" {
-			return nil, fmt.Errorf("set OPENAI_API_KEY or run 'vibecode' to configure")
-		}
-		model := cfg.Model
-		if model == "" {
-			model = "gpt-5.4"
-		}
-		if cfg.BaseURL != "" {
-			return provider.NewOpenAIWithBaseURL(key, model, cfg.BaseURL), nil
-		}
-		return provider.NewOpenAI(key, model), nil
-
-	case "deepseek":
-		key := cfg.APIKey("deepseek")
-		if key == "" {
-			key = cfg.APIKey("openai")
-		}
-		if key == "" {
-			return nil, fmt.Errorf("run 'vibecode' to configure your DeepSeek API key")
-		}
-		model := cfg.Model
-		if model == "" {
-			model = "deepseek-chat"
-		}
-		baseURL := "https://api.deepseek.com/v1/chat/completions"
-		if cfg.BaseURL != "" {
-			baseURL = cfg.BaseURL
-		}
-		return provider.NewOpenAIWithBaseURL(key, model, baseURL), nil
-
-	case "kimi", "moonshot":
-		key := cfg.APIKey(cfg.Provider)
-		if key == "" {
-			key = cfg.APIKey("kimi")
-		}
-		if key == "" {
-			key = cfg.APIKey("moonshot")
-		}
-		if key == "" {
-			key = cfg.APIKey("openai")
-		}
-		if key == "" {
-			return nil, fmt.Errorf("run 'vibecode' to configure your %s API key", cfg.Provider)
-		}
-		model := cfg.Model
-		if model == "" {
-			model = "moonshot-v1-8k"
-		}
-		baseURL := "https://api.moonshot.ai/v1/chat/completions"
-		if cfg.BaseURL != "" {
-			baseURL = cfg.BaseURL
-		}
-		return provider.NewOpenAIWithBaseURL(key, model, baseURL), nil
-
-	case "zhipu":
-		key := cfg.APIKey("zhipu")
-		if key == "" {
-			key = cfg.APIKey("anthropic")
-		}
-		if key == "" {
-			return nil, fmt.Errorf("run 'vibecode' to configure your Zhipu AI API key")
-		}
-		model := cfg.Model
-		if model == "" {
-			model = "glm-5.1"
-		}
-		if cfg.BaseURL != "" {
-			return provider.NewAnthropicWithBaseURL(key, model, cfg.BaseURL), nil
-		}
-		return provider.NewOpenAIWithBaseURL(key, model, "https://open.bigmodel.cn/api/paas/v4/chat/completions"), nil
-
-	case "qwen":
-		key := cfg.APIKey("qwen")
-		if key == "" {
-			key = cfg.APIKey("openai")
-		}
-		if key == "" {
-			return nil, fmt.Errorf("run 'vibecode' to configure your Qwen API key")
-		}
-		model := cfg.Model
-		if model == "" {
-			model = "qwen-turbo"
-		}
-		baseURL := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-		if cfg.BaseURL != "" {
-			baseURL = cfg.BaseURL
-		}
-		return provider.NewOpenAIWithBaseURL(key, model, baseURL), nil
-
-	case "ollama":
+	// Ollama is a special local provider not on OpenRouter.
+	if cfg.Provider == "ollama" {
 		model := cfg.Model
 		if model == "" {
 			model = "llama3"
 		}
 		baseURL := cfg.APIKey("ollama_base_url")
 		return provider.NewOllama(model, baseURL), nil
+	}
 
-	default:
+	// Look up provider metadata (base URL, API type) from our minimal map.
+	meta, ok := provider.ProviderMetaMap[cfg.Provider]
+	if !ok {
 		return nil, fmt.Errorf("unsupported provider: %s\nRun 'vibecode' to configure a provider", cfg.Provider)
+	}
+
+	key := cfg.APIKey(cfg.Provider)
+	if key == "" {
+		return nil, fmt.Errorf("no API key for %s — set %s_API_KEY or run 'vibecode' to configure", meta.Name, cfg.Provider)
+	}
+
+	model := cfg.Model
+	if model == "" {
+		model = "default"
+	}
+
+	baseURL := meta.BaseURL
+	if cfg.BaseURL != "" {
+		baseURL = cfg.BaseURL
+	}
+
+	switch meta.APIType {
+	case "anthropic":
+		return provider.NewAnthropicWithBaseURL(key, model, baseURL), nil
+	case "openai":
+		return provider.NewOpenAIWithBaseURL(key, model, baseURL), nil
+	default:
+		return nil, fmt.Errorf("unknown API type %q for provider %s", meta.APIType, cfg.Provider)
 	}
 }
 
@@ -684,14 +606,16 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 func setConfigValue(cfg *config.Config, key, value string) error {
 	switch key {
 	case "provider":
-		validProviders := []string{"anthropic", "openai", "deepseek", "kimi", "moonshot", "zhipu", "qwen", "ollama"}
-		for _, p := range validProviders {
-			if p == value {
-				cfg.Provider = value
-				return nil
-			}
+		if provider.IsKnownProvider(value) || value == "ollama" {
+			cfg.Provider = value
+			return nil
 		}
-		return fmt.Errorf("invalid provider: %s (valid: %s)", value, strings.Join(validProviders, ", "))
+		var valid []string
+		for k := range provider.ProviderMetaMap {
+			valid = append(valid, k)
+		}
+		valid = append(valid, "ollama")
+		return fmt.Errorf("invalid provider: %s (valid: %s)", value, strings.Join(valid, ", "))
 	case "model":
 		cfg.Model = value
 		return nil

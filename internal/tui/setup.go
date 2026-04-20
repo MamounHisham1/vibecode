@@ -9,6 +9,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/vibecode/vibecode/internal/openrouter"
+	"github.com/vibecode/vibecode/internal/provider"
 )
 
 // ProviderInfo holds metadata about an AI provider.
@@ -35,121 +37,60 @@ type SetupConfig struct {
 	APIKey   string
 }
 
-// Providers returns all available providers with their top models (as of April 2026).
-func Providers() []ProviderInfo {
-	return []ProviderInfo{
-		{
-			ID:      "anthropic",
-			Name:    "Anthropic",
-			APIType: "anthropic",
-			BaseURL: "https://api.anthropic.com/v1/messages",
-			Models: []ModelInfo{
-				{ID: "claude-opus-4-7", Name: "Claude Opus 4.7", Description: "Most capable model, best for complex reasoning and agentic coding"},
-				{ID: "claude-opus-4-6-fast", Name: "Claude Opus 4.6 (Fast)", Description: "Fast-mode variant with identical capabilities, higher output speed at premium pricing"},
-				{ID: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6", Description: "Best balance of speed and intelligence, 1M context"},
-				{ID: "claude-opus-4-6", Name: "Claude Opus 4.6", Description: "Previous flagship, strong coding and enterprise workflows"},
-				{ID: "claude-opus-4-5", Name: "Claude Opus 4.5", Description: "Frontier reasoning model optimized for complex software engineering"},
-			},
-		},
-		{
-			ID:      "openai",
-			Name:    "OpenAI",
-			APIType: "openai",
-			BaseURL: "https://api.openai.com/v1/chat/completions",
-			Models: []ModelInfo{
-				{ID: "gpt-5.4-nano", Name: "GPT-5.4 Nano", Description: "Most lightweight and cost-efficient variant of the GPT-5.4 family"},
-				{ID: "gpt-5.4-mini", Name: "GPT-5.4 Mini", Description: "Fast, efficient model bringing core GPT-5.4 capabilities to high-volume workloads"},
-				{ID: "gpt-5.4-pro", Name: "GPT-5.4 Pro", Description: "Maximum capability variant with extended compute and unified architecture"},
-				{ID: "gpt-5.4", Name: "GPT-5.4", Description: "Latest frontier model unifying the Codex and GPT lines into a single system"},
-				{ID: "gpt-5.3-chat", Name: "GPT-5.3 Chat", Description: "Update to ChatGPT's most-used model for smoother everyday conversations"},
-			},
-		},
-		{
-			ID:      "deepseek",
-			Name:    "DeepSeek",
-			APIType: "openai",
-			BaseURL: "https://api.deepseek.com/v1/chat/completions",
-			Models: []ModelInfo{
-				{ID: "deepseek-v3.2-speciale", Name: "DeepSeek V3.2 Speciale", Description: "High-compute variant optimized for maximum reasoning performance"},
-				{ID: "deepseek-v3.2", Name: "DeepSeek V3.2", Description: "Latest general-purpose model harmonizing efficiency and capability"},
-				{ID: "deepseek-v3.2-exp", Name: "DeepSeek V3.2 Exp", Description: "Experimental release with intermediate improvements"},
-				{ID: "deepseek-v3.1-terminus", Name: "DeepSeek V3.1 Terminus", Description: "Updated V3.1 maintaining strong performance and stability"},
-				{ID: "deepseek-chat-v3.1", Name: "DeepSeek V3.1", Description: "Hybrid reasoning model with 671B parameters and 37B active"},
-				{ID: "deepseek-chat", Name: "DeepSeek Chat", Description: "Default alias pointing to the latest general-purpose model"},
-			},
-		},
-		{
-			ID:      "kimi",
-			Name:    "Kimi (Moonshot AI)",
-			APIType: "openai",
-			BaseURL: "https://api.moonshot.ai/v1/chat/completions",
-			Models: []ModelInfo{
-				{ID: "kimi-k2.6", Name: "Kimi K2.6", Description: "Next-generation multimodal model for long-horizon coding and multi-agent orchestration"},
-				{ID: "kimi-k2.5", Name: "Kimi K2.5", Description: "Native multimodal model with state-of-the-art visual coding capabilities"},
-				{ID: "kimi-k2-thinking", Name: "Kimi K2 Thinking", Description: "Most advanced open reasoning model with deep chain-of-thought"},
-				{ID: "kimi-k2-0905", Name: "Kimi K2 0905", Description: "September update with large-scale MoE architecture improvements"},
-				{ID: "kimi-k2", Name: "Kimi K2", Description: "1T MoE model with 32B active params, strong coding and agents"},
-				{ID: "moonshot-v1-8k", Name: "Moonshot v1 8K", Description: "Stable production model with 8K context window"},
-			},
-		},
-		{
-			ID:      "moonshot",
-			Name:    "Moonshot AI",
-			APIType: "openai",
-			BaseURL: "https://api.moonshot.ai/v1/chat/completions",
-			Models: []ModelInfo{
-				{ID: "kimi-k2.6", Name: "Kimi K2.6", Description: "Next-generation multimodal model for long-horizon coding and multi-agent orchestration"},
-				{ID: "kimi-k2.5", Name: "Kimi K2.5", Description: "Native multimodal model with state-of-the-art visual coding capabilities"},
-				{ID: "kimi-k2-thinking", Name: "Kimi K2 Thinking", Description: "Most advanced open reasoning model with deep chain-of-thought"},
-				{ID: "kimi-k2-0905", Name: "Kimi K2 0905", Description: "September update with large-scale MoE architecture improvements"},
-				{ID: "kimi-k2", Name: "Kimi K2", Description: "1T MoE model with 32B active params, strong coding and agents"},
-				{ID: "moonshot-v1-8k", Name: "Moonshot v1 8K", Description: "Stable production model with 8K context window"},
-			},
-		},
-		{
-			ID:      "zhipu",
-			Name:    "Zhipu AI / Z.ai (GLM)",
-			APIType: "openai",
-			BaseURL: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-			AltBaseURLs: map[string]string{
-				"Global (z.ai)":       "https://api.z.ai/api/anthropic/v1/messages",
-				"China (bigmodel.cn)": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-			},
-			Models: []ModelInfo{
-				{ID: "glm-5.1", Name: "GLM-5.1", Description: "Latest flagship, agentic engineering SOTA with major coding leaps"},
-				{ID: "glm-5v-turbo", Name: "GLM 5V Turbo", Description: "First native multimodal agent foundation model for vision-based coding"},
-				{ID: "glm-5-turbo", Name: "GLM 5 Turbo", Description: "Fast inference model with strong performance in agent-based tasks"},
-				{ID: "glm-5", Name: "GLM-5", Description: "745B MoE flagship for complex systems design and frontier reasoning"},
-				{ID: "glm-4.7-flash", Name: "GLM 4.7 Flash", Description: "30B-class SOTA balancing performance and efficiency"},
-			},
-		},
-		{
-			ID:      "qwen",
-			Name:    "Qwen (Alibaba Cloud)",
-			APIType: "openai",
-			BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-			Models: []ModelInfo{
-				{ID: "qwen3.6-plus", Name: "Qwen3.6 Plus", Description: "Most capable Qwen model combining efficient linear attention with sparsity"},
-				{ID: "qwen3.5-9b", Name: "Qwen3.5-9B", Description: "Multimodal foundation model with strong reasoning and vision capabilities"},
-				{ID: "qwen3.5-35b-a3b", Name: "Qwen3.5-35B-A3B", Description: "Native vision-language model with hybrid architecture"},
-				{ID: "qwen3.5-27b", Name: "Qwen3.5-27B", Description: "Dense vision-language model with linear attention mechanism"},
-				{ID: "qwen3.5-122b-a10b", Name: "Qwen3.5-122B-A10B", Description: "Large vision-language model built on hybrid architecture"},
-			},
-		},
-		{
-			ID:      "ollama",
-			Name:    "Ollama (Local)",
-			APIType: "ollama",
-			BaseURL: "http://localhost:11434/v1/chat/completions",
-			Models: []ModelInfo{
-				{ID: "qwen3:8b", Name: "Qwen3 8B", Description: "Latest Qwen3 series, strong reasoning and coding"},
-				{ID: "llama3", Name: "Llama 3", Description: "Meta's open model"},
-				{ID: "mistral", Name: "Mistral", Description: "Fast and efficient"},
-				{ID: "deepseek-coder-v2", Name: "DeepSeek Coder V2", Description: "Code-specialized"},
-				{ID: "qwen2.5-coder", Name: "Qwen 2.5 Coder", Description: "Coding focused"},
-			},
-		},
+// convertOpenRouterData transforms OpenRouter provider+model data into our ProviderInfo format.
+func convertOpenRouterData(data []openrouter.ProviderModels) []ProviderInfo {
+	var result []ProviderInfo
+	for _, pm := range data {
+		meta, ok := provider.ProviderMetaMap[pm.Provider.Slug]
+		if !ok {
+			continue // skip providers we don't know how to route
+		}
+
+		var models []ModelInfo
+		for _, m := range pm.Models {
+			models = append(models, ModelInfo{
+				ID:          openrouter.NormalizeModelID(pm.Provider.Slug, m.ID),
+				Name:        strings.TrimPrefix(m.Name, pm.Provider.Name+": "),
+				Description: truncate(m.Description, 100),
+			})
+		}
+
+		result = append(result, ProviderInfo{
+			ID:      pm.Provider.Slug,
+			Name:    meta.Name,
+			APIType: meta.APIType,
+			BaseURL: meta.BaseURL,
+			Models:  models,
+		})
 	}
+	return result
+}
+
+// Providers returns cached provider data, or an empty list if not yet fetched.
+func Providers() []ProviderInfo {
+	if data, ok := openrouter.GlobalCache.Get(); ok {
+		return convertOpenRouterData(data)
+	}
+	return nil
+}
+
+// fetchProvidersCmd is a Bubble Tea command that fetches provider data from OpenRouter.
+func fetchProvidersCmd() tea.Msg {
+	client := openrouter.NewClient()
+	data, err := openrouter.GlobalCache.FetchOrGet(client)
+	if err != nil {
+		return providersErrMsg{err: err}
+	}
+	provider.BuildRegistryFromOpenRouter(data)
+	return providersLoadedMsg{providers: convertOpenRouterData(data)}
+}
+
+type providersLoadedMsg struct {
+	providers []ProviderInfo
+}
+
+type providersErrMsg struct {
+	err error
 }
 
 // ─── Setup Flow State ────────────────────────────────────────────
@@ -157,7 +98,8 @@ func Providers() []ProviderInfo {
 type setupPhase int
 
 const (
-	phaseProvider setupPhase = iota
+	phaseLoading setupPhase = iota
+	phaseProvider
 	phaseEndpoint
 	phaseModel
 	phaseToken
@@ -182,6 +124,7 @@ type SetupModel struct {
 	blinkOn     bool
 	width       int
 	height      int
+	loadErr     string
 
 	chosenProvider ProviderInfo
 	chosenModel    ModelInfo
@@ -192,10 +135,15 @@ type SetupModel struct {
 
 // NewSetupModel creates the setup flow model.
 func NewSetupModel() *SetupModel {
+	providers := Providers()
+	phase := phaseProvider
+	if len(providers) == 0 {
+		phase = phaseLoading
+	}
 	return &SetupModel{
 		theme:     DefaultTheme(),
-		phase:     phaseProvider,
-		providers: Providers(),
+		phase:     phase,
+		providers: providers,
 		input:     make([]rune, 0),
 		blinkOn:   true,
 		width:     80,
@@ -216,6 +164,9 @@ func (m *SetupModel) Result() *SetupConfig {
 }
 
 func (m *SetupModel) Init() tea.Cmd {
+	if m.phase == phaseLoading {
+		return tea.Batch(fetchProvidersCmd, setupTickCmd)
+	}
 	return setupTickCmd
 }
 
@@ -246,6 +197,16 @@ func (m *SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.phase = phaseDone
 		return m, tea.Quit
+
+	case providersLoadedMsg:
+		m.providers = msg.providers
+		m.phase = phaseProvider
+		return m, nil
+
+	case providersErrMsg:
+		m.loadErr = msg.err.Error()
+		m.phase = phaseError
+		return m, nil
 
 	case tea.KeyMsg:
 		switch m.phase {
@@ -426,6 +387,8 @@ func (m *SetupModel) validateToken() tea.Cmd {
 
 func (m *SetupModel) View() string {
 	switch m.phase {
+	case phaseLoading:
+		return m.viewLoading()
 	case phaseProvider:
 		return m.viewProvider()
 	case phaseEndpoint:
@@ -440,6 +403,11 @@ func (m *SetupModel) View() string {
 		return m.viewError()
 	}
 	return ""
+}
+
+func (m *SetupModel) viewLoading() string {
+	t := m.theme
+	return "\n  " + t.AssistantDot.Render("⠋") + " " + t.BrandLight.Render("Loading providers from OpenRouter...") + "\n"
 }
 
 func (m *SetupModel) viewProvider() string {
@@ -573,10 +541,17 @@ func (m *SetupModel) viewError() string {
 	var b strings.Builder
 
 	b.WriteString("\n")
-	b.WriteString("  " + t.Error.Render("⚠  Authentication failed") + "\n")
+	if m.loadErr != "" {
+		b.WriteString("  " + t.Error.Render("⚠  Failed to load providers") + "\n")
+	} else {
+		b.WriteString("  " + t.Error.Render("⚠  Authentication failed") + "\n")
+	}
 	b.WriteString("\n")
 	// Truncate long error messages
 	errMsg := m.validationErr
+	if m.loadErr != "" {
+		errMsg = m.loadErr
+	}
 	if len(errMsg) > 200 {
 		errMsg = errMsg[:200] + "..."
 	}

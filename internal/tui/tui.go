@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/vibecode/vibecode/internal/openrouter"
 	"github.com/vibecode/vibecode/internal/provider"
 	"github.com/vibecode/vibecode/internal/commands"
 	"github.com/vibecode/vibecode/internal/session"
@@ -227,6 +228,18 @@ func tickCmd() tea.Msg {
 	return tickMsg{}
 }
 
+// refreshPickerMsg is sent when provider data has been fetched and the picker should refresh.
+type refreshPickerMsg struct{}
+
+func fetchProvidersForPickerCmd() tea.Msg {
+	client := openrouter.NewClient()
+	data, err := openrouter.GlobalCache.FetchOrGet(client)
+	if err == nil {
+		provider.BuildRegistryFromOpenRouter(data)
+	}
+	return refreshPickerMsg{}
+}
+
 // ─── Update ─────────────────────────────────────────────────────
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -238,6 +251,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetMaxLines(m.height / 2)
 		m.autocomplete.SetWidth(m.width)
 		m.modelPicker.SetSize(m.width, m.height)
+		return m, nil
+
+	case refreshPickerMsg:
+		if m.modelPicker.Visible() {
+			m.modelPicker.Open(m.providerName, m.modelName)
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -369,6 +388,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.modelPicker.Open(m.providerName, m.modelName)
 						m.input.Reset()
 						m.welcome = false
+						if len(Providers()) == 0 {
+							return m, fetchProvidersForPickerCmd
+						}
 						return m, nil
 					}
 
@@ -412,6 +434,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modelPicker.Open(m.providerName, m.modelName)
 					m.input.Reset()
 					m.welcome = false
+					if len(Providers()) == 0 {
+						return m, fetchProvidersForPickerCmd
+					}
 					return m, nil
 				}
 
