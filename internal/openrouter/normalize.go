@@ -12,18 +12,12 @@ func NormalizeModelID(providerSlug, openrouterModelID string) string {
 	// Provider-specific normalization rules
 	switch providerSlug {
 	case "anthropic":
-		// Anthropic native API uses hyphens: claude-opus-4-7
 		return strings.ReplaceAll(id, ".", "-")
-	case "openai":
-		// OpenAI native API keeps dots: gpt-4.1
-		return id
-	case "deepseek":
-		return id
-	case "moonshotai":
-		return id
-	case "zhipu":
-		return id
-	case "qwen":
+	case "openai", "deepseek", "moonshotai", "zhipu", "qwen", "alibaba",
+		"minimax", "mistral", "groq", "together", "fireworks", "perplexity",
+		"xai", "deepinfra", "cerebras", "sambanova", "siliconflow", "nvidia",
+		"ai21", "stepfun", "upstage", "hyperbolic", "nebius", "novita",
+		"inference-net", "cohere", "google-ai-studio":
 		return id
 	default:
 		return id

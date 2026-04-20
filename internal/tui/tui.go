@@ -1092,6 +1092,9 @@ func (m *Model) renderProviderEndpointPicker() string {
 	var b strings.Builder
 
 	boxWidth := min(m.width-8, 60)
+	if boxWidth < 4 {
+		boxWidth = 4
+	}
 	innerWidth := boxWidth - 4
 
 	b.WriteString(t.Bold.Render("  Select Plan for ") + t.Brand.Render(m.setupProvider.Name) + "\n")
@@ -1127,6 +1130,9 @@ func (m *Model) renderProviderKeyInput() string {
 	var b strings.Builder
 
 	boxWidth := min(m.width-8, 60)
+	if boxWidth < 4 {
+		boxWidth = 4
+	}
 	innerWidth := boxWidth - 4
 
 	b.WriteString(t.Bold.Render("  Configure ") + t.Brand.Render(m.setupProvider.Name) + "\n")

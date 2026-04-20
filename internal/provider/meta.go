@@ -56,13 +56,129 @@ var ProviderMetaMap = map[string]ProviderMeta{
 		APIType: "openai",
 		BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
 	},
+	"alibaba": {
+		Name:    "Alibaba (Qwen)",
+		APIType: "openai",
+		BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+	},
+	"minimax": {
+		Name:    "MiniMax",
+		APIType: "anthropic",
+		BaseURL: "https://api.minimax.io/anthropic/v1/messages",
+		Endpoints: []ProviderEndpoint{
+			{Name: "Coding Plan (Anthropic)", BaseURL: "https://api.minimax.io/anthropic/v1/messages", APIType: "anthropic"},
+			{Name: "Standard API (OpenAI)", BaseURL: "https://api.minimax.chat/v1/chat/completions", APIType: "openai"},
+		},
+	},
+	"mistral": {
+		Name:    "Mistral AI",
+		APIType: "openai",
+		BaseURL: "https://api.mistral.ai/v1/chat/completions",
+	},
+	"google-ai-studio": {
+		Name:    "Google AI Studio",
+		APIType: "openai",
+		BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+	},
+	"groq": {
+		Name:    "Groq",
+		APIType: "openai",
+		BaseURL: "https://api.groq.com/openai/v1/chat/completions",
+	},
+	"together": {
+		Name:    "Together AI",
+		APIType: "openai",
+		BaseURL: "https://api.together.xyz/v1/chat/completions",
+	},
+	"fireworks": {
+		Name:    "Fireworks AI",
+		APIType: "openai",
+		BaseURL: "https://api.fireworks.ai/inference/v1/chat/completions",
+	},
+	"perplexity": {
+		Name:    "Perplexity",
+		APIType: "openai",
+		BaseURL: "https://api.perplexity.ai/chat/completions",
+	},
+	"xai": {
+		Name:    "xAI",
+		APIType: "openai",
+		BaseURL: "https://api.x.ai/v1/chat/completions",
+	},
+	"deepinfra": {
+		Name:    "DeepInfra",
+		APIType: "openai",
+		BaseURL: "https://api.deepinfra.com/v1/openai/chat/completions",
+	},
+	"cerebras": {
+		Name:    "Cerebras",
+		APIType: "openai",
+		BaseURL: "https://api.cerebras.ai/v1/chat/completions",
+	},
+	"sambanova": {
+		Name:    "SambaNova",
+		APIType: "openai",
+		BaseURL: "https://api.sambanova.ai/v1/chat/completions",
+	},
+	"siliconflow": {
+		Name:    "SiliconFlow",
+		APIType: "openai",
+		BaseURL: "https://api.siliconflow.cn/v1/chat/completions",
+	},
+	"nvidia": {
+		Name:    "NVIDIA",
+		APIType: "openai",
+		BaseURL: "https://integrate.api.nvidia.com/v1/chat/completions",
+	},
+	"ai21": {
+		Name:    "AI21 Labs",
+		APIType: "openai",
+		BaseURL: "https://api.ai21.com/studio/v1/chat/completions",
+	},
+	"stepfun": {
+		Name:    "StepFun",
+		APIType: "openai",
+		BaseURL: "https://api.stepfun.com/v1/chat/completions",
+	},
+	"upstage": {
+		Name:    "Upstage",
+		APIType: "openai",
+		BaseURL: "https://api.upstage.ai/v1/chat/completions",
+	},
+	"hyperbolic": {
+		Name:    "Hyperbolic",
+		APIType: "openai",
+		BaseURL: "https://api.hyperbolic.xyz/v1/chat/completions",
+	},
+	"nebius": {
+		Name:    "Nebius AI",
+		APIType: "openai",
+		BaseURL: "https://api.studio.nebius.ai/v1/chat/completions",
+	},
+	"novita": {
+		Name:    "Novita AI",
+		APIType: "openai",
+		BaseURL: "https://api.novita.ai/v3/openai/chat/completions",
+	},
+	"inference-net": {
+		Name:    "InferenceNet",
+		APIType: "openai",
+		BaseURL: "https://api.inference.net/v1/chat/completions",
+	},
+	"cohere": {
+		Name:    "Cohere",
+		APIType: "openai",
+		BaseURL: "https://api.cohere.com/v2/chat",
+	},
 }
 
 // ProviderSlugAliases maps OpenRouter provider slugs to our internal provider IDs.
 // This handles rebrands or slug changes on OpenRouter's side without breaking existing configs.
 var ProviderSlugAliases = map[string]string{
-	"z.ai":   "zhipu",
-	"zhipu":  "zhipu",
+	"z.ai":    "zhipu",
+	"zhipu":   "zhipu",
+	"google":  "google-ai-studio",
+	"alibaba": "alibaba",
 }
 
 // ProviderNameMatches maps lowercase provider name substrings to internal provider IDs.
