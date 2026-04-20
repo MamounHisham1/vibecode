@@ -48,45 +48,19 @@ func NewRegistry() *Registry {
 }
 
 func (r *Registry) registerBuiltins() {
-	r.Register(Command{
-		Name:        "help",
-		Aliases:     []string{"h", "?"},
-		Description: "Show available commands and keyboard shortcuts",
-		Type:        TypeLocal,
-		Handler:     r.helpHandler,
-	})
-
-	r.Register(Command{
-		Name:        "clear",
-		Aliases:     []string{"cls"},
-		Description: "Clear conversation history",
-		Type:        TypeLocal,
-		Handler: func(args string) Result {
-			return Result{Clear: true, Output: "Conversation cleared."}
-		},
-	})
-
-	r.Register(Command{
-		Name:        "model",
-		Description: "Show current model or switch model",
-		Type:        TypeLocal,
-		Handler: func(args string) Result {
-			if args == "" {
-				return Result{Output: "Usage: /model <model-name>"}
-			}
-			return Result{Output: fmt.Sprintf("Model switching to: %s (restart to apply)", args)}
-		},
-	})
-
-	r.Register(Command{
-		Name:        "config",
-		Description: "Show current configuration",
-		Type:        TypeLocal,
-		Handler: func(args string) Result {
-			return Result{Output: "Use ~/.vibecode/config.json to edit configuration."}
-		},
-	})
-
+	r.registerHelp()
+	r.registerClear()
+	r.registerModel()
+	r.registerConfig()
+	r.registerExit()
+	r.registerPlan()
+	r.registerCompact()
+	r.registerStatus()
+	r.registerTools()
+	r.registerDiff()
+	r.registerSkills()
+	r.registerUsage()
+	r.registerApprove()
 }
 
 // Register adds a command to the registry.
@@ -141,7 +115,7 @@ func (r *Registry) helpHandler(args string) Result {
 		if len(cmd.Aliases) > 0 {
 			aliases = fmt.Sprintf(" (%s)", strings.Join(cmd.Aliases, ", "))
 		}
-		b.WriteString(fmt.Sprintf("  /%-12s%s%s\n", cmd.Name, cmd.Description, aliases))
+		b.WriteString(fmt.Sprintf("  /%-14s%s%s\n", cmd.Name, cmd.Description, aliases))
 	}
 
 	b.WriteString("\nKeyboard shortcuts:\n")

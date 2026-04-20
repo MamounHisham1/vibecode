@@ -198,7 +198,7 @@ func (a AutocompleteModel) View() string {
 			if len(line) > maxWidth {
 				line = line[:maxWidth]
 			}
-			line = t.InverseCursor.Render(line)
+			line = t.Suggestion.Render(line)
 		} else {
 			line = t.Dim.Render(line)
 		}
