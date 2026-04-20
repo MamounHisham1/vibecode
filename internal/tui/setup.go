@@ -15,12 +15,12 @@ import (
 
 // ProviderInfo holds metadata about an AI provider.
 type ProviderInfo struct {
-	ID          string
-	Name        string
-	Models      []ModelInfo
-	BaseURL     string
-	AltBaseURLs map[string]string // option name -> URL, shown as endpoint picker if non-empty
-	APIType     string            // "anthropic", "openai", "ollama"
+	ID        string
+	Name      string
+	Models    []ModelInfo
+	BaseURL   string
+	Endpoints []provider.ProviderEndpoint // shown as endpoint picker if len > 1
+	APIType   string                      // "anthropic", "openai", "ollama"
 }
 
 // ModelInfo holds metadata about a model.
@@ -41,11 +41,6 @@ type SetupConfig struct {
 func convertOpenRouterData(data []openrouter.ProviderModels) []ProviderInfo {
 	var result []ProviderInfo
 	for _, pm := range data {
-		meta, ok := provider.ProviderMetaMap[pm.Provider.Slug]
-		if !ok {
-			continue // skip providers we don't know how to route
-		}
-
 		var models []ModelInfo
 		for _, m := range pm.Models {
 			models = append(models, ModelInfo{
@@ -55,12 +50,34 @@ func convertOpenRouterData(data []openrouter.ProviderModels) []ProviderInfo {
 			})
 		}
 
+		// Normalize OpenRouter slug through aliases and name matching for config compatibility.
+		internalID := provider.ResolveProviderID(pm.Provider.Slug, pm.Provider.Name)
+
+		// Use known routing metadata if available; otherwise default to OpenAI-compatible.
+		meta, known := provider.ProviderMetaMap[internalID]
+		name := pm.Provider.Name
+		apiType := "openai"
+		baseURL := ""
+		if known {
+			name = meta.Name
+			apiType = meta.APIType
+			baseURL = meta.BaseURL
+		}
+
+		// Copy endpoints from metadata if available.
+		var endpoints []provider.ProviderEndpoint
+		if known && len(meta.Endpoints) > 0 {
+			endpoints = make([]provider.ProviderEndpoint, len(meta.Endpoints))
+			copy(endpoints, meta.Endpoints)
+		}
+
 		result = append(result, ProviderInfo{
-			ID:      pm.Provider.Slug,
-			Name:    meta.Name,
-			APIType: meta.APIType,
-			BaseURL: meta.BaseURL,
-			Models:  models,
+			ID:        internalID,
+			Name:      name,
+			APIType:   apiType,
+			BaseURL:   baseURL,
+			Endpoints: endpoints,
+			Models:    models,
 		})
 	}
 	return result
@@ -117,7 +134,7 @@ type SetupModel struct {
 	providers   []ProviderInfo
 	selected    int
 	endpointCur int
-	endpoints   []string // ordered keys from AltBaseURLs
+	endpoints   []provider.ProviderEndpoint
 	modelCur    int
 	input       []rune
 	inputCur    int
@@ -219,14 +236,36 @@ func (m *SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case phaseToken:
 			return m.handleTokenKeys(msg)
 		case phaseError:
-			if msg.String() == "enter" {
+			switch msg.String() {
+			case "enter":
+				if m.loadErr != "" {
+					// Retry loading providers
+					m.phase = phaseLoading
+					m.loadErr = ""
+					return m, fetchProvidersCmd
+				}
+				// Retry API key entry
 				m.phase = phaseToken
 				m.input = m.input[:0]
 				m.inputCur = 0
 				m.validationErr = ""
 				return m, nil
-			}
-			if msg.String() == "esc" || msg.String() == "ctrl+c" {
+			case "p":
+				// Proceed despite validation error (for server errors where key may still be valid)
+				if m.loadErr == "" {
+					m.phase = phaseDone
+					return m, tea.Quit
+				}
+				return m, nil
+			case "esc":
+				if m.loadErr != "" {
+					return m, tea.Quit
+				}
+				// Go back to model picker (user can then go back to endpoint/provider)
+				m.phase = phaseModel
+				m.validationErr = ""
+				return m, nil
+			case "ctrl+c":
 				return m, tea.Quit
 			}
 		case phaseDone:
@@ -249,13 +288,18 @@ func (m *SetupModel) handleProviderKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		m.chosenProvider = m.providers[m.selected]
 		m.skipKey = m.chosenProvider.APIType == "ollama"
-		if len(m.chosenProvider.AltBaseURLs) > 0 {
-			m.endpoints = make([]string, 0, len(m.chosenProvider.AltBaseURLs))
-			for k := range m.chosenProvider.AltBaseURLs {
-				m.endpoints = append(m.endpoints, k)
-			}
+		if len(m.chosenProvider.Endpoints) > 1 {
+			m.endpoints = m.chosenProvider.Endpoints
 			m.endpointCur = 0
 			m.phase = phaseEndpoint
+		} else if len(m.chosenProvider.Endpoints) == 1 {
+			// Single endpoint — apply it directly without showing picker
+			m.chosenProvider.BaseURL = m.chosenProvider.Endpoints[0].BaseURL
+			if m.chosenProvider.Endpoints[0].APIType != "" {
+				m.chosenProvider.APIType = m.chosenProvider.Endpoints[0].APIType
+			}
+			m.modelCur = 0
+			m.phase = phaseModel
 		} else {
 			m.modelCur = 0
 			m.phase = phaseModel
@@ -278,16 +322,15 @@ func (m *SetupModel) handleEndpointKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		chosen := m.endpoints[m.endpointCur]
-		m.chosenProvider.BaseURL = m.chosenProvider.AltBaseURLs[chosen]
-		// Update APIType based on endpoint
-		if strings.Contains(m.chosenProvider.BaseURL, "anthropic") {
-			m.chosenProvider.APIType = "anthropic"
+		m.chosenProvider.BaseURL = chosen.BaseURL
+		if chosen.APIType != "" {
+			m.chosenProvider.APIType = chosen.APIType
 		}
 		m.modelCur = 0
 		m.phase = phaseModel
 	case "esc":
 		m.phase = phaseProvider
-		m.selected = 0
+		// Preserve provider selection so user doesn't lose their place
 	}
 	return m, nil
 }
@@ -314,8 +357,13 @@ func (m *SetupModel) handleModelKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input = m.input[:0]
 		m.inputCur = 0
 	case "esc":
-		m.phase = phaseProvider
-		m.selected = 0
+		// Go back to endpoint picker if provider has multiple endpoints,
+		// otherwise go back to provider picker.
+		if len(m.chosenProvider.Endpoints) > 1 {
+			m.phase = phaseEndpoint
+		} else {
+			m.phase = phaseProvider
+		}
 	}
 	return m, nil
 }
@@ -375,7 +423,7 @@ func (m *SetupModel) validateToken() tea.Cmd {
 
 		switch m.chosenProvider.APIType {
 		case "anthropic":
-			return validationDoneMsg{validateAnthropicKeyWithBase(ctx, m.chosenProvider.BaseURL, m.apiKey)}
+			return validationDoneMsg{validateAnthropicKeyWithBase(ctx, m.chosenProvider.BaseURL, m.apiKey, m.chosenModel.ID)}
 		case "openai":
 			return validationDoneMsg{validateOpenAICompatible(ctx, m.chosenProvider.BaseURL, m.apiKey, m.chosenModel.ID)}
 		}
@@ -448,7 +496,7 @@ func (m *SetupModel) viewEndpoint() string {
 
 	for i, ep := range m.endpoints {
 		cursor := "  "
-		name := ep
+		name := ep.Name
 		if i == m.endpointCur {
 			cursor = t.Brand.Render("▸ ")
 			name = t.Brand.Render(name)
@@ -544,7 +592,7 @@ func (m *SetupModel) viewError() string {
 	if m.loadErr != "" {
 		b.WriteString("  " + t.Error.Render("⚠  Failed to load providers") + "\n")
 	} else {
-		b.WriteString("  " + t.Error.Render("⚠  Authentication failed") + "\n")
+		b.WriteString("  " + t.Error.Render("⚠  Validation failed") + "\n")
 	}
 	b.WriteString("\n")
 	// Truncate long error messages
@@ -557,18 +605,27 @@ func (m *SetupModel) viewError() string {
 	}
 	b.WriteString("  " + t.Dim.Render(errMsg) + "\n")
 	b.WriteString("\n")
-	b.WriteString("  " + t.Dim.Render("enter to try again · esc to quit") + "\n")
+	if m.loadErr != "" {
+		b.WriteString("  " + t.Dim.Render("enter to retry · esc to quit") + "\n")
+	} else if strings.Contains(m.validationErr, "key may be valid") || strings.Contains(m.validationErr, "server error") {
+		b.WriteString("  " + t.Dim.Render("enter to retry · p to proceed anyway · esc to go back") + "\n")
+	} else {
+		b.WriteString("  " + t.Dim.Render("enter to retry key · esc to go back") + "\n")
+	}
 	return b.String()
 }
 
 // ─── Validation Helpers ────────────────────────────────────────────
 
 func validateAnthropicKey(ctx context.Context, apiKey string) error {
-	return validateAnthropicKeyWithBase(ctx, "https://api.anthropic.com/v1/messages", apiKey)
+	return validateAnthropicKeyWithBase(ctx, "https://api.anthropic.com/v1/messages", apiKey, "claude-3-haiku-20240307")
 }
 
-func validateAnthropicKeyWithBase(ctx context.Context, baseURL, apiKey string) error {
-	body := `{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+func validateAnthropicKeyWithBase(ctx context.Context, baseURL, apiKey, model string) error {
+	if baseURL == "" {
+		return fmt.Errorf("provider has no endpoint configured")
+	}
+	body := fmt.Sprintf(`{"model":"%s","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`, model)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, strings.NewReader(body))
 	if err != nil {
@@ -593,6 +650,11 @@ func validateAnthropicKeyWithBase(ctx context.Context, baseURL, apiKey string) e
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil
 	}
+	if resp.StatusCode >= 500 {
+		// 5xx = server error; key may still be valid but endpoint doesn't like our test request
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server error %d (key may be valid): %s", resp.StatusCode, truncate(string(respBody), 120))
+	}
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("API returned %d: %s", resp.StatusCode, truncate(string(respBody), 120))
@@ -601,6 +663,9 @@ func validateAnthropicKeyWithBase(ctx context.Context, baseURL, apiKey string) e
 }
 
 func validateOpenAICompatible(ctx context.Context, baseURL, apiKey, model string) error {
+	if baseURL == "" {
+		return fmt.Errorf("provider has no endpoint configured")
+	}
 	body := fmt.Sprintf(`{"model":"%s","max_completion_tokens":1,"messages":[{"role":"user","content":"hi"}]}`, model)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, strings.NewReader(body))
@@ -625,6 +690,11 @@ func validateOpenAICompatible(ctx context.Context, baseURL, apiKey, model string
 	if resp.StatusCode == http.StatusTooManyRequests {
 		// 429 = rate limit or quota — key is valid, just throttled
 		return nil
+	}
+	if resp.StatusCode >= 500 {
+		// 5xx = server error; key may still be valid but endpoint doesn't like our test request
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server error %d (key may be valid): %s", resp.StatusCode, truncate(string(respBody), 120))
 	}
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(resp.Body)

@@ -14,9 +14,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/vibecode/vibecode/config"
+	"github.com/vibecode/vibecode/internal/commands"
 	"github.com/vibecode/vibecode/internal/openrouter"
 	"github.com/vibecode/vibecode/internal/provider"
-	"github.com/vibecode/vibecode/internal/commands"
 	"github.com/vibecode/vibecode/internal/session"
 	"github.com/vibecode/vibecode/internal/tool"
 )
@@ -67,6 +68,15 @@ const (
 	toolFailed
 )
 
+type providerSetupPhase int
+
+const (
+	providerSetupNone providerSetupPhase = iota
+	providerSetupPicker
+	providerSetupEndpoint
+	providerSetupKeyInput
+)
+
 type Model struct {
 	theme Theme
 	input InputModel
@@ -113,6 +123,23 @@ type Model struct {
 
 	// Model picker
 	modelPicker ModelPicker
+
+	// Provider picker
+	providerPicker ProviderPicker
+
+	// Provider setup flow state
+	providerSetup       providerSetupPhase
+	setupProvider       ProviderInfo
+	setupEndpointSelected int
+	setupInput          []rune
+	setupInputCur       int
+	setupBlinkOn        bool
+
+	// API key filter for model/provider pickers
+	hasAPIKey func(string) bool
+
+	// Config access for saving API keys during provider setup
+	config *config.Config
 
 	// Ask user question state
 	askQuestion string
@@ -198,8 +225,12 @@ func New(inputChan chan<- string) *Model {
 		theme:        theme,
 		input:        input,
 		autocomplete: NewAutocompleteModel(theme),
-		modelPicker:  NewModelPicker(theme),
-		entries:      nil,
+		modelPicker:      NewModelPicker(theme),
+		providerPicker:   NewProviderPicker(theme),
+		providerSetup:    providerSetupNone,
+		setupInput:       make([]rune, 0),
+		setupBlinkOn:     true,
+		entries:          nil,
 		streamBuf:    &strings.Builder{},
 		toolIndex:    make(map[string]int),
 		status:       "",
@@ -251,15 +282,190 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetMaxLines(m.height / 2)
 		m.autocomplete.SetWidth(m.width)
 		m.modelPicker.SetSize(m.width, m.height)
+		m.providerPicker.SetSize(m.width, m.height)
 		return m, nil
 
 	case refreshPickerMsg:
+		if m.providerPicker.Visible() {
+			m.providerPicker.Open()
+		}
 		if m.modelPicker.Visible() {
 			m.modelPicker.Open(m.providerName, m.modelName)
 		}
 		return m, nil
 
 	case tea.KeyMsg:
+		// Provider setup endpoint picker phase
+		if m.providerSetup == providerSetupEndpoint {
+			switch msg.String() {
+			case "ctrl+c":
+				m.providerSetup = providerSetupNone
+				m.setupEndpointSelected = 0
+				return m, nil
+			case "esc":
+				m.providerSetup = providerSetupNone
+				m.setupEndpointSelected = 0
+				return m, nil
+			case "up", "ctrl+p":
+				if m.setupEndpointSelected > 0 {
+					m.setupEndpointSelected--
+				}
+				return m, nil
+			case "down", "ctrl+n":
+				if m.setupEndpointSelected < len(m.setupProvider.Endpoints)-1 {
+					m.setupEndpointSelected++
+				}
+				return m, nil
+			case "enter":
+				chosen := m.setupProvider.Endpoints[m.setupEndpointSelected]
+				m.setupProvider.BaseURL = chosen.BaseURL
+				if chosen.APIType != "" {
+					m.setupProvider.APIType = chosen.APIType
+				}
+				m.providerSetup = providerSetupNone
+				m.setupEndpointSelected = 0
+				// After choosing endpoint, check if key is needed
+				if m.setupProvider.APIType == "ollama" || (m.hasAPIKey != nil && m.hasAPIKey(m.setupProvider.ID)) {
+					m.modelPicker.OpenForProvider(m.setupProvider.ID, m.modelName)
+					if len(Providers()) == 0 {
+						return m, fetchProvidersForPickerCmd
+					}
+				} else {
+					m.providerSetup = providerSetupKeyInput
+					m.setupInput = m.setupInput[:0]
+					m.setupInputCur = 0
+				}
+				return m, nil
+			}
+			return m, nil
+		}
+		// Provider setup key input phase
+		if m.providerSetup == providerSetupKeyInput {
+			switch msg.String() {
+			case "ctrl+c":
+				m.providerSetup = providerSetupNone
+				m.setupInput = m.setupInput[:0]
+				m.setupInputCur = 0
+				return m, nil
+			case "esc":
+				m.providerSetup = providerSetupNone
+				m.setupInput = m.setupInput[:0]
+				m.setupInputCur = 0
+				return m, nil
+			case "enter":
+				apiKey := string(m.setupInput)
+				if apiKey != "" && m.config != nil {
+					if m.config.APIKeys == nil {
+						m.config.APIKeys = make(map[string]string)
+					}
+					m.config.APIKeys[m.setupProvider.ID] = apiKey
+					_ = m.config.Save()
+				}
+				m.providerSetup = providerSetupNone
+				m.setupInput = m.setupInput[:0]
+				m.setupInputCur = 0
+				m.modelPicker.OpenForProvider(m.setupProvider.ID, m.modelName)
+				if len(Providers()) == 0 {
+					return m, fetchProvidersForPickerCmd
+				}
+				return m, nil
+			case "backspace":
+				if m.setupInputCur > 0 {
+					m.setupInput = append(m.setupInput[:m.setupInputCur-1], m.setupInput[m.setupInputCur:]...)
+					m.setupInputCur--
+				}
+				return m, nil
+			case "delete":
+				if m.setupInputCur < len(m.setupInput) {
+					m.setupInput = append(m.setupInput[:m.setupInputCur], m.setupInput[m.setupInputCur+1:]...)
+				}
+				return m, nil
+			case "left":
+				if m.setupInputCur > 0 {
+					m.setupInputCur--
+				}
+				return m, nil
+			case "right":
+				if m.setupInputCur < len(m.setupInput) {
+					m.setupInputCur++
+				}
+				return m, nil
+			default:
+				if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+					for _, r := range msg.Runes {
+						m.setupInput = append(m.setupInput, 0)
+						copy(m.setupInput[m.setupInputCur+1:], m.setupInput[m.setupInputCur:])
+						m.setupInput[m.setupInputCur] = r
+						m.setupInputCur++
+					}
+					return m, nil
+				}
+			}
+			return m, nil
+		}
+
+		// Provider picker takes precedence when visible
+		if m.providerPicker.Visible() {
+			switch msg.String() {
+			case "up", "ctrl+p":
+				m.providerPicker.Up()
+				return m, nil
+			case "down", "ctrl+n":
+				m.providerPicker.Down()
+				return m, nil
+			case "enter":
+				if item, ok := m.providerPicker.Selected(); ok {
+					m.providerPicker.Close()
+					m.setupProvider = ProviderInfo{ID: item.ID, Name: item.Name}
+					// Find full provider info from cached data
+					for _, p := range Providers() {
+						if p.ID == item.ID {
+							m.setupProvider = p
+							break
+						}
+					}
+					// If provider has multiple endpoints, let user choose first
+					if len(m.setupProvider.Endpoints) > 1 {
+						m.providerSetup = providerSetupEndpoint
+						m.setupEndpointSelected = 0
+						return m, nil
+					}
+					// Otherwise proceed to key check or model picker
+					if m.setupProvider.APIType == "ollama" || (m.hasAPIKey != nil && m.hasAPIKey(item.ID)) {
+						m.modelPicker.OpenForProvider(item.ID, m.modelName)
+						if len(Providers()) == 0 {
+							return m, fetchProvidersForPickerCmd
+						}
+					} else {
+						m.providerSetup = providerSetupKeyInput
+						m.setupInput = m.setupInput[:0]
+						m.setupInputCur = 0
+					}
+				}
+				return m, nil
+			case "esc", "ctrl+c":
+				m.providerPicker.Close()
+				return m, nil
+			case "backspace":
+				m.providerPicker.Backspace()
+				return m, nil
+			case "ctrl+u":
+				m.providerPicker.ClearSearch()
+				return m, nil
+			case " ":
+				m.providerPicker.TypeRune(' ')
+				return m, nil
+			default:
+				if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+					for _, r := range msg.Runes {
+						m.providerPicker.TypeRune(r)
+					}
+					return m, nil
+				}
+			}
+			return m, nil
+		}
+
 		// Model picker takes precedence when visible
 		if m.modelPicker.Visible() {
 			switch msg.String() {
@@ -394,6 +600,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 
+					// Special case: /providers opens the interactive provider picker
+					if name == "providers" || name == "p" {
+						m.providerPicker.Open()
+						m.input.Reset()
+						m.welcome = false
+						if len(Providers()) == 0 {
+							return m, fetchProvidersForPickerCmd
+						}
+						return m, nil
+					}
+
 					// Now process as a slash command
 					if m.commandHandler != nil {
 						output, clearHist := m.commandHandler(name, "")
@@ -432,6 +649,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Special case: /model with no args opens the interactive picker
 				if cmdName == "model" && cmdArgs == "" {
 					m.modelPicker.Open(m.providerName, m.modelName)
+					m.input.Reset()
+					m.welcome = false
+					if len(Providers()) == 0 {
+						return m, fetchProvidersForPickerCmd
+					}
+					return m, nil
+				}
+
+				// Special case: /providers opens the interactive provider picker
+				if (cmdName == "providers" || cmdName == "p") && cmdArgs == "" {
+					m.providerPicker.Open()
 					m.input.Reset()
 					m.welcome = false
 					if len(Providers()) == 0 {
@@ -635,16 +863,22 @@ func (m *Model) View() string {
 		b.WriteString("\n" + content)
 	}
 
-	// Input area (or model picker when open)
+	// Input area (or picker overlay when open, or key input during provider setup)
 	b.WriteString("\n\n")
-	if m.modelPicker.Visible() {
+	if m.providerSetup == providerSetupEndpoint {
+		b.WriteString(m.renderProviderEndpointPicker())
+	} else if m.providerSetup == providerSetupKeyInput {
+		b.WriteString(m.renderProviderKeyInput())
+	} else if m.providerPicker.Visible() {
+		b.WriteString(m.providerPicker.View())
+	} else if m.modelPicker.Visible() {
 		b.WriteString(m.modelPicker.View())
 	} else {
 		b.WriteString(m.renderInputArea())
 	}
 
 	// Token info below input
-	if !m.modelPicker.Visible() {
+	if !m.modelPicker.Visible() && !m.providerPicker.Visible() && m.providerSetup != providerSetupKeyInput && m.providerSetup != providerSetupEndpoint {
 		b.WriteString(m.renderTokenInfo())
 	}
 
@@ -850,6 +1084,93 @@ func (m *Model) renderAskQuestion() string {
 		}
 	}
 	return b.String()
+}
+
+// renderProviderKeyInput renders the API key input prompt during provider setup.
+func (m *Model) renderProviderEndpointPicker() string {
+	t := m.theme
+	var b strings.Builder
+
+	boxWidth := min(m.width-8, 60)
+	innerWidth := boxWidth - 4
+
+	b.WriteString(t.Bold.Render("  Select Plan for ") + t.Brand.Render(m.setupProvider.Name) + "\n")
+	b.WriteString(t.Separator.Render(strings.Repeat("─", innerWidth)) + "\n")
+
+	for i, ep := range m.setupProvider.Endpoints {
+		prefix := "   "
+		nameStyle := t.Text
+		if i == m.setupEndpointSelected {
+			prefix = " ▸ "
+			nameStyle = t.Suggestion
+		}
+		line := prefix + ep.Name
+		b.WriteString(nameStyle.Render(line) + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(t.Dim.Render("  ↑/↓ navigate · enter select · esc back") + "\n")
+	b.WriteString(t.Separator.Render(strings.Repeat("─", innerWidth)) + "\n")
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#555555")).
+		Padding(0, 1).
+		Width(boxWidth).
+		Render(b.String())
+
+	return box
+}
+
+func (m *Model) renderProviderKeyInput() string {
+	t := m.theme
+	var b strings.Builder
+
+	boxWidth := min(m.width-8, 60)
+	innerWidth := boxWidth - 4
+
+	b.WriteString(t.Bold.Render("  Configure ") + t.Brand.Render(m.setupProvider.Name) + "\n")
+	b.WriteString(t.Separator.Render(strings.Repeat("─", innerWidth)) + "\n")
+	b.WriteString("  " + t.Bold.Render("Enter your API key:") + "\n")
+	b.WriteString("\n")
+
+	// Masked input with cursor
+	var inputLine strings.Builder
+	for i := range m.setupInput {
+		ch := "•"
+		if i == m.setupInputCur && m.setupBlinkOn {
+			inputLine.WriteString(t.InverseCursor.Render(ch))
+		} else {
+			inputLine.WriteString(ch)
+		}
+	}
+	if m.setupInputCur == len(m.setupInput) && m.setupBlinkOn {
+		inputLine.WriteString(t.InverseCursor.Render(" "))
+	}
+
+	if len(m.setupInput) == 0 {
+		placeholder := "sk-..."
+		if m.setupBlinkOn {
+			inputLine.WriteString(t.InverseCursor.Render(string(placeholder[0])))
+			inputLine.WriteString(t.InputHint.Render(placeholder[1:]))
+		} else {
+			inputLine.WriteString(t.InputHint.Render(placeholder))
+		}
+	}
+
+	b.WriteString("  " + t.PromptChar.Render("❯ ") + inputLine.String() + "\n")
+	b.WriteString("\n")
+	b.WriteString(t.Dim.Render("  enter confirm · esc back") + "\n")
+	b.WriteString(t.Separator.Render(strings.Repeat("─", innerWidth)) + "\n")
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#555555")).
+		Padding(0, 1).
+		Width(boxWidth).
+		Render(b.String())
+
+	return box
 }
 
 // ─── Entry Renderers ────────────────────────────────────────────
@@ -1231,6 +1552,23 @@ func (m *Model) SetProviderName(name string) {
 // SetModelChangeHandler sets the handler called when the user selects a new model.
 func (m *Model) SetModelChangeHandler(fn func(providerID, modelID string) error) {
 	m.modelChangeHandler = fn
+}
+
+// SetHasAPIKeyFunc sets the function used to filter providers by available API keys.
+func (m *Model) SetHasAPIKeyFunc(fn func(string) bool) {
+	m.hasAPIKey = fn
+	m.modelPicker.SetHasAPIKeyFunc(fn)
+}
+
+// SetConfig sets the config pointer used to save API keys during provider setup.
+func (m *Model) SetConfig(cfg *config.Config) {
+	m.config = cfg
+	m.providerPicker.SetKeyGetter(func(provider string) string {
+		if cfg != nil {
+			return cfg.APIKey(provider)
+		}
+		return ""
+	})
 }
 
 func (m *Model) advanceSpinnerVerb() {

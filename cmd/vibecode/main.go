@@ -193,15 +193,9 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 		return provider.NewOllama(model, baseURL), nil
 	}
 
-	// Look up provider metadata (base URL, API type) from our minimal map.
-	meta, ok := provider.ProviderMetaMap[cfg.Provider]
-	if !ok {
-		return nil, fmt.Errorf("unsupported provider: %s\nRun 'vibecode' to configure a provider", cfg.Provider)
-	}
-
 	key := cfg.APIKey(cfg.Provider)
 	if key == "" {
-		return nil, fmt.Errorf("no API key for %s — set %s_API_KEY or run 'vibecode' to configure", meta.Name, cfg.Provider)
+		return nil, fmt.Errorf("no API key for %s — set %s_API_KEY or run 'vibecode' to configure", cfg.Provider, cfg.Provider)
 	}
 
 	model := cfg.Model
@@ -209,18 +203,44 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 		model = "default"
 	}
 
-	baseURL := meta.BaseURL
-	if cfg.BaseURL != "" {
-		baseURL = cfg.BaseURL
+	// Look up provider metadata (base URL, API type) from our minimal map.
+	meta, known := provider.ProviderMetaMap[cfg.Provider]
+
+	baseURL := cfg.BaseURL
+	apiType := "openai"
+
+	if known {
+		if baseURL == "" {
+			baseURL = meta.BaseURL
+		}
+		apiType = meta.APIType
+		// If the user has chosen a specific endpoint (custom base_url), infer its API type.
+		if baseURL != "" && baseURL != meta.BaseURL {
+			for _, ep := range meta.Endpoints {
+				if ep.BaseURL == baseURL && ep.APIType != "" {
+					apiType = ep.APIType
+					break
+				}
+			}
+		}
+	} else {
+		// Unknown provider — user must set base_url manually.
+		if baseURL == "" {
+			return nil, fmt.Errorf("provider %s has no known endpoint — set base_url first with: vibecode config set base_url <url>", cfg.Provider)
+		}
 	}
 
-	switch meta.APIType {
+	if baseURL == "" {
+		return nil, fmt.Errorf("provider %s has no endpoint — set base_url with: vibecode config set base_url <url>", cfg.Provider)
+	}
+
+	switch apiType {
 	case "anthropic":
 		return provider.NewAnthropicWithBaseURL(key, model, baseURL), nil
 	case "openai":
 		return provider.NewOpenAIWithBaseURL(key, model, baseURL), nil
 	default:
-		return nil, fmt.Errorf("unknown API type %q for provider %s", meta.APIType, cfg.Provider)
+		return nil, fmt.Errorf("unknown API type %q for provider %s", apiType, cfg.Provider)
 	}
 }
 
@@ -374,6 +394,34 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 	m := tui.New(inputChan)
 	m.SetStatus(cfg.Model, dir)
 	m.SetProviderName(cfg.Provider)
+
+	// API key checker: determines which providers have configured keys.
+	hasKey := func(prov string) bool {
+		if prov == "ollama" {
+			return true
+		}
+		// Normalize OpenRouter slugs through aliases (e.g. "z.ai" → "zhipu")
+		if alias, ok := provider.ProviderSlugAliases[prov]; ok {
+			prov = alias
+		}
+		if cfg.APIKey(prov) != "" {
+			return true
+		}
+		// Provider-specific env vars not covered by config.Load()
+		switch prov {
+		case "deepseek":
+			return os.Getenv("DEEPSEEK_API_KEY") != ""
+		case "moonshotai":
+			return os.Getenv("MOONSHOT_API_KEY") != "" || os.Getenv("KIMI_API_KEY") != ""
+		case "zhipu":
+			return os.Getenv("ZHIPU_API_KEY") != ""
+		case "qwen":
+			return os.Getenv("DASHSCOPE_API_KEY") != "" || os.Getenv("QWEN_API_KEY") != ""
+		}
+		return false
+	}
+	m.SetHasAPIKeyFunc(hasKey)
+	m.SetConfig(cfg)
 
 	// Wire slash commands
 	cmdReg := commands.NewRegistry()
@@ -606,16 +654,8 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 func setConfigValue(cfg *config.Config, key, value string) error {
 	switch key {
 	case "provider":
-		if provider.IsKnownProvider(value) || value == "ollama" {
-			cfg.Provider = value
-			return nil
-		}
-		var valid []string
-		for k := range provider.ProviderMetaMap {
-			valid = append(valid, k)
-		}
-		valid = append(valid, "ollama")
-		return fmt.Errorf("invalid provider: %s (valid: %s)", value, strings.Join(valid, ", "))
+		cfg.Provider = value
+		return nil
 	case "model":
 		cfg.Model = value
 		return nil

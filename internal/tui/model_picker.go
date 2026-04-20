@@ -18,14 +18,16 @@ type modelPickerItem struct {
 
 // ModelPicker is an overlay for selecting a new LLM model.
 type ModelPicker struct {
-	theme       Theme
-	visible     bool
-	allItems    []modelPickerItem // full unfiltered list
-	items       []modelPickerItem // filtered list
-	selected    int
-	width       int
-	height      int
-	searchQuery string
+	theme          Theme
+	visible        bool
+	allItems       []modelPickerItem // full unfiltered list
+	items          []modelPickerItem // filtered list
+	selected       int
+	width          int
+	height         int
+	searchQuery    string
+	hasAPIKey      func(string) bool
+	filterProvider string // if set, only show models from this provider
 }
 
 // NewModelPicker creates a new model picker.
@@ -44,9 +46,25 @@ func (mp *ModelPicker) SetSize(width, height int) {
 	mp.height = height
 }
 
+// SetHasAPIKeyFunc sets the function used to filter providers by available API keys.
+func (mp *ModelPicker) SetHasAPIKeyFunc(fn func(string) bool) {
+	mp.hasAPIKey = fn
+}
+
 // Open populates the picker with available models and makes it visible.
 // currentProvider and currentModel are used to pre-select the active model.
 func (mp *ModelPicker) Open(currentProvider, currentModel string) {
+	mp.filterProvider = ""
+	mp.populate(currentProvider, currentModel)
+}
+
+// OpenForProvider populates the picker with models from a specific provider.
+func (mp *ModelPicker) OpenForProvider(providerID, currentModel string) {
+	mp.filterProvider = providerID
+	mp.populate(providerID, currentModel)
+}
+
+func (mp *ModelPicker) populate(currentProvider, currentModel string) {
 	mp.allItems = nil
 	providers := Providers()
 	if providers == nil {
@@ -58,6 +76,14 @@ func (mp *ModelPicker) Open(currentProvider, currentModel string) {
 		return
 	}
 	for _, prov := range providers {
+		// Filter by API key availability
+		if mp.hasAPIKey != nil && !mp.hasAPIKey(prov.ID) {
+			continue
+		}
+		// Filter by specific provider
+		if mp.filterProvider != "" && prov.ID != mp.filterProvider {
+			continue
+		}
 		for _, m := range prov.Models {
 			mp.allItems = append(mp.allItems, modelPickerItem{
 				ProviderID:   prov.ID,
