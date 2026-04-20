@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/vibecode/vibecode/internal/provider"
+	"github.com/vibecode/vibecode/internal/commands"
 	"github.com/vibecode/vibecode/internal/session"
 	"github.com/vibecode/vibecode/internal/tool"
 )
@@ -100,6 +101,10 @@ type Model struct {
 	// Command handler
 	commandHandler func(cmdName, args string) (string, bool) // returns (output, clearHistory)
 
+	// Autocomplete
+	autocomplete AutocompleteModel
+	cmdRegistry  *commands.Registry
+
 	// Ask user question state
 	askQuestion string
 	askOptions  []string
@@ -183,6 +188,7 @@ func New(inputChan chan<- string) *Model {
 	return &Model{
 		theme:        theme,
 		input:        input,
+		autocomplete: NewAutocompleteModel(theme),
 		entries:      nil,
 		streamBuf:    &strings.Builder{},
 		toolIndex:    make(map[string]int),
@@ -221,6 +227,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.input.SetWidth(m.inputTextWidth())
 		m.input.SetMaxLines(m.height / 2)
+		m.autocomplete.SetWidth(m.width)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -242,16 +249,80 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Non-empty input: clear the input text on first Ctrl+C
 			m.input.SetValue("")
+			m.autocomplete.Dismiss()
 			return m, nil
 
 		case "ctrl+o":
 			m.toggleExpandAll()
 			return m, nil
 
+		case "tab":
+			if m.autocomplete.Visible() {
+				name := m.autocomplete.SelectedName()
+				if name != "" {
+					m.input.SetValue("/" + name + " ")
+					m.autocomplete.Dismiss()
+				}
+				return m, nil
+			}
+			m.input.Update(msg)
+			m.updateAutocomplete()
+			return m, nil
+
+		case "up", "ctrl+p":
+			if m.autocomplete.Visible() {
+				m.autocomplete.Up()
+				return m, nil
+			}
+			m.input.Update(msg)
+			m.updateAutocomplete()
+			return m, nil
+
+		case "down", "ctrl+n":
+			if m.autocomplete.Visible() {
+				m.autocomplete.Down()
+				return m, nil
+			}
+			m.input.Update(msg)
+			m.updateAutocomplete()
+			return m, nil
+
+		case "esc":
+			if m.autocomplete.Visible() {
+				m.autocomplete.Dismiss()
+				return m, nil
+			}
+			m.input.Update(msg)
+			m.updateAutocomplete()
+			return m, nil
+
 		case "enter":
 			if m.waiting {
 				return m, nil
 			}
+
+			// If autocomplete is visible, accept the selected suggestion
+			if m.autocomplete.Visible() {
+				name := m.autocomplete.SelectedName()
+				if name != "" {
+					m.input.SetValue("/" + name)
+					m.autocomplete.Dismiss()
+					// Now process as a slash command
+					if m.commandHandler != nil {
+						output, clearHist := m.commandHandler(name, "")
+						m.input.Reset()
+						m.welcome = false
+						if output != "" {
+							m.appendSystemMessage(output, false)
+						}
+						if clearHist {
+							m.entries = nil
+						}
+					}
+				}
+				return m, nil
+			}
+
 			raw := m.input.Value()
 			if strings.TrimSpace(raw) == "" {
 				return m, nil
@@ -295,6 +366,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		default:
 			m.input.Update(msg)
+			m.updateAutocomplete()
 			return m, nil
 		}
 
@@ -631,7 +703,13 @@ func (m *Model) renderTranscript() string {
 }
 
 func (m *Model) renderInputArea() string {
-	return m.input.View()
+	var b strings.Builder
+	b.WriteString(m.input.View())
+	if m.autocomplete.Visible() {
+		b.WriteString("\n")
+		b.WriteString(m.autocomplete.View())
+	}
+	return b.String()
 }
 
 func (m *Model) renderTokenInfo() string {
@@ -1083,6 +1161,19 @@ func (m *Model) inputTextWidth() int {
 // SetCommandHandler sets the handler for slash commands.
 func (m *Model) SetCommandHandler(fn func(cmdName, args string) (output string, clearHistory bool)) {
 	m.commandHandler = fn
+}
+
+// SetCommandRegistry sets the command registry used for autocomplete.
+func (m *Model) SetCommandRegistry(reg *commands.Registry) {
+	m.cmdRegistry = reg
+}
+
+// updateAutocomplete refreshes the autocomplete state based on current input.
+func (m *Model) updateAutocomplete() {
+	if m.cmdRegistry == nil {
+		return
+	}
+	m.autocomplete.Update(m.input.Value(), m.cmdRegistry)
 }
 
 // ─── Callback ───────────────────────────────────────────────────

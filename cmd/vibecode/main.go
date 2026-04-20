@@ -443,6 +443,7 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 
 	// Wire slash commands
 	cmdReg := commands.NewRegistry()
+	m.SetCommandRegistry(cmdReg)
 	m.SetCommandHandler(func(cmdName, args string) (string, bool) {
 		cmd, ok := cmdReg.Lookup(cmdName)
 		if !ok {
