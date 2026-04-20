@@ -115,7 +115,7 @@ type Model struct {
 
 	// Model change handler: called when user selects a new model from the picker.
 	// Returns an error if the provider could not be built.
-	modelChangeHandler func(providerID, modelID string) error
+	modelChangeHandler func(providerID, modelID, baseURL string) error
 
 	// Autocomplete
 	autocomplete AutocompleteModel
@@ -479,7 +479,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if item, ok := m.modelPicker.Selected(); ok {
 					m.modelPicker.Close()
 					if m.modelChangeHandler != nil {
-						if err := m.modelChangeHandler(item.ProviderID, item.ModelID); err != nil {
+						baseURL := ""
+						if m.setupProvider.ID == item.ProviderID {
+							baseURL = m.setupProvider.BaseURL
+						}
+						if err := m.modelChangeHandler(item.ProviderID, item.ModelID, baseURL); err != nil {
 							m.appendSystemMessage(fmt.Sprintf("Failed to switch model: %s", err), true)
 						} else {
 							m.appendSystemMessage(fmt.Sprintf("Switched to %s (%s)", item.ModelName, item.ProviderName), false)
@@ -1556,7 +1560,7 @@ func (m *Model) SetProviderName(name string) {
 }
 
 // SetModelChangeHandler sets the handler called when the user selects a new model.
-func (m *Model) SetModelChangeHandler(fn func(providerID, modelID string) error) {
+func (m *Model) SetModelChangeHandler(fn func(providerID, modelID, baseURL string) error) {
 	m.modelChangeHandler = fn
 }
 

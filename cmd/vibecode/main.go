@@ -77,7 +77,7 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 		cfg.Provider = setupCfg.Provider.ID
 		cfg.Model = setupCfg.Model.ID
-		cfg.BaseURL = setupCfg.Provider.BaseURL
+		cfg.SetBaseURL(setupCfg.Provider.ID, setupCfg.Provider.BaseURL)
 		if setupCfg.APIKey != "" {
 			if cfg.APIKeys == nil {
 				cfg.APIKeys = make(map[string]string)
@@ -206,7 +206,7 @@ func buildProvider(cfg *config.Config) (provider.Provider, error) {
 	// Look up provider metadata (base URL, API type) from our minimal map.
 	meta, known := provider.ProviderMetaMap[cfg.Provider]
 
-	baseURL := cfg.BaseURL
+	baseURL := cfg.GetBaseURL(cfg.Provider)
 	apiType := "openai"
 
 	if known {
@@ -464,9 +464,12 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 	}
 
 	// Model switch handler: rebuild provider, save config, update or create agent.
-	m.SetModelChangeHandler(func(providerID, modelID string) error {
+	m.SetModelChangeHandler(func(providerID, modelID, baseURL string) error {
 		cfg.Provider = providerID
 		cfg.Model = modelID
+		if baseURL != "" {
+			cfg.SetBaseURL(providerID, baseURL)
+		}
 		if err := cfg.Save(); err != nil {
 			return fmt.Errorf("save config: %w", err)
 		}
@@ -641,7 +644,7 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 	case "model":
 		return cfg.Model, nil
 	case "base_url":
-		return cfg.BaseURL, nil
+		return cfg.GetBaseURL(cfg.Provider), nil
 	case "max_iterations":
 		return fmt.Sprintf("%d", cfg.MaxIterations), nil
 	case "theme":
@@ -660,7 +663,7 @@ func setConfigValue(cfg *config.Config, key, value string) error {
 		cfg.Model = value
 		return nil
 	case "base_url":
-		cfg.BaseURL = value
+		cfg.SetBaseURL(cfg.Provider, value)
 		return nil
 	case "max_iterations":
 		n, err := strconv.Atoi(value)

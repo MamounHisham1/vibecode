@@ -16,7 +16,8 @@ type CompactionConfig struct {
 type Config struct {
 	Provider      string                     `json:"provider"`
 	Model         string                     `json:"model"`
-	BaseURL       string                     `json:"base_url"`
+	BaseURL       string                     `json:"base_url,omitempty"`
+	BaseURLs      map[string]string          `json:"base_urls,omitempty"`
 	APIKeys       map[string]string          `json:"api_keys"`
 	AutoApprove   []string                   `json:"auto_approve"`
 	MaxIterations int                        `json:"max_iterations"`
@@ -90,7 +91,10 @@ func Load() (*Config, error) {
 		cfg.APIKeys["anthropic"] = v
 	}
 	if v := os.Getenv("ANTHROPIC_BASE_URL"); v != "" {
-		cfg.BaseURL = v
+		if cfg.BaseURLs == nil {
+			cfg.BaseURLs = make(map[string]string)
+		}
+		cfg.BaseURLs["anthropic"] = v
 	}
 	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
 		cfg.APIKeys["openai"] = v
@@ -131,6 +135,25 @@ func (c *Config) APIKey(provider string) string {
 	return c.APIKeys[provider]
 }
 
+func (c *Config) GetBaseURL(provider string) string {
+	if c.BaseURLs != nil {
+		if u, ok := c.BaseURLs[provider]; ok && u != "" {
+			return u
+		}
+	}
+	if c.BaseURL != "" {
+		return c.BaseURL
+	}
+	return ""
+}
+
+func (c *Config) SetBaseURL(provider, url string) {
+	if c.BaseURLs == nil {
+		c.BaseURLs = make(map[string]string)
+	}
+	c.BaseURLs[provider] = url
+}
+
 // ─── Settings Layer ────────────────────────────────────────────
 
 // Settings is a partial config that can be layered on top of the base config.
@@ -139,6 +162,7 @@ type Settings struct {
 	Provider      string                     `json:"provider,omitempty"`
 	Model         string                     `json:"model,omitempty"`
 	BaseURL       string                     `json:"base_url,omitempty"`
+	BaseURLs      map[string]string          `json:"base_urls,omitempty"`
 	APIKeys       map[string]string          `json:"api_keys,omitempty"`
 	AutoApprove   []string                   `json:"auto_approve,omitempty"`
 	MaxIterations int                        `json:"max_iterations,omitempty"`
@@ -179,6 +203,14 @@ func mergeSettings(cfg *Config, s *Settings) {
 	}
 	if s.BaseURL != "" {
 		cfg.BaseURL = s.BaseURL
+	}
+	if len(s.BaseURLs) > 0 {
+		if cfg.BaseURLs == nil {
+			cfg.BaseURLs = make(map[string]string)
+		}
+		for k, v := range s.BaseURLs {
+			cfg.BaseURLs[k] = v
+		}
 	}
 	if len(s.APIKeys) > 0 {
 		if cfg.APIKeys == nil {
