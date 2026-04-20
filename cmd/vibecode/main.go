@@ -256,8 +256,8 @@ func buildSystemPrompt(dir string) string {
 		b.WriteString("\n")
 	}
 
-	// Load VIBECODE.md if present
-	if instructions := loadVibeCodeMD(dir); instructions != "" {
+	// Load project instructions if present
+	if instructions := loadProjectInstructions(dir); instructions != "" {
 		b.WriteString("\nProject instructions:\n")
 		b.WriteString(instructions)
 		b.WriteString("\n")
@@ -322,8 +322,9 @@ func getGitContext(dir string) string {
 	return b.String()
 }
 
-func loadVibeCodeMD(dir string) string {
-	// Walk from dir up to home, collecting VIBECODE.md files (like Claude Code's CLAUDE.md)
+func loadProjectInstructions(dir string) string {
+	// Walk from dir up to home, collecting AGENTS.md files
+	// Falls back to CLAUDE.md if no AGENTS.md exists at the same level
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
@@ -331,22 +332,29 @@ func loadVibeCodeMD(dir string) string {
 
 	var files []string
 
-	// User-level: ~/.vibecode/VIBECODE.md
-	globalPath := filepath.Join(home, ".vibecode", "VIBECODE.md")
-	if data, err := os.ReadFile(globalPath); err == nil {
+	// User-level: ~/.vibecode/AGENTS.md (or ~/.vibecode/CLAUDE.md fallback)
+	globalAgents := filepath.Join(home, ".vibecode", "AGENTS.md")
+	if data, err := os.ReadFile(globalAgents); err == nil {
 		files = append(files, string(data))
+	} else {
+		globalClaude := filepath.Join(home, ".vibecode", "CLAUDE.md")
+		if data, err := os.ReadFile(globalClaude); err == nil {
+			files = append(files, string(data))
+		}
 	}
 
 	// Project-level: walk from dir up to home
 	cur := dir
 	for {
-		p := filepath.Join(cur, "VIBECODE.md")
+		p := filepath.Join(cur, "AGENTS.md")
 		if data, err := os.ReadFile(p); err == nil {
 			files = append(files, string(data))
-		}
-		p = filepath.Join(cur, ".vibecode", "VIBECODE.md")
-		if data, err := os.ReadFile(p); err == nil {
-			files = append(files, string(data))
+		} else {
+			// Fallback to CLAUDE.md at the same level
+			p = filepath.Join(cur, "CLAUDE.md")
+			if data, err := os.ReadFile(p); err == nil {
+				files = append(files, string(data))
+			}
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur || parent == home || parent == "/" {
