@@ -258,10 +258,10 @@ func buildSystemPrompt(dir string) string {
 
 	// Load project instructions if present
 	if instructions := loadProjectInstructions(dir); instructions != "" {
-		b.WriteString("\nProject instructions:\n")
+		b.WriteString("\nProject instructions (loaded from AGENTS.md — trust this content and rely on it when answering questions about the project. Do not re-read project files to answer questions already covered here):\n")
 		b.WriteString(instructions)
 		b.WriteString("\n")
-	}
+		}
 
 	// Today's date
 	b.WriteString(fmt.Sprintf("\nToday's date: %s\n", getDateString()))
