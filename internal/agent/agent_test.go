@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/vibecode/vibecode/internal/provider"
+	"github.com/vibecode/vibecode/internal/session"
 	"github.com/vibecode/vibecode/internal/tool"
 )
 
@@ -72,6 +73,8 @@ func (c *mockCallback) OnError(err error) {
 	c.errors = append(c.errors, err)
 	c.mu.Unlock()
 }
+func (c *mockCallback) OnTokenUsage(_ session.SessionUsage) {}
+func (c *mockCallback) OnCompaction(_ string)               {}
 
 // mockTool implements tool.Tool for testing.
 type mockTool struct {

@@ -14,6 +14,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/vibecode/vibecode/internal/provider"
+	"github.com/vibecode/vibecode/internal/session"
 	"github.com/vibecode/vibecode/internal/tool"
 )
 
@@ -89,6 +91,7 @@ type Model struct {
 	// Session stats
 	sessionStart time.Time
 	turnCount    int
+	tokenUsage   session.SessionUsage
 
 	// Cancellation
 	cancelFunc  context.CancelFunc
@@ -160,6 +163,14 @@ type askQuestionMsg struct {
 
 type planModeMsg struct {
 	active bool
+}
+
+type tokenUsageMsg struct {
+	usage session.SessionUsage
+}
+
+type compactionMsg struct {
+	summary string
 }
 
 // ─── Constructor ────────────────────────────────────────────────
@@ -369,6 +380,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case planModeMsg:
 		m.planMode = msg.active
 		return m, nil
+
+	case tokenUsageMsg:
+		m.tokenUsage = msg.usage
+		return m, nil
+
+	case compactionMsg:
+		m.appendSystemMessage("Context auto-compacted", false)
+		return m, nil
 	}
 
 	return m, nil
@@ -448,6 +467,9 @@ func (m *Model) View() string {
 	// Input area
 	b.WriteString("\n\n")
 	b.WriteString(m.renderInputArea())
+
+	// Token info below input
+	b.WriteString(m.renderTokenInfo())
 
 	fullView := b.String()
 
@@ -545,6 +567,10 @@ func (m *Model) renderStatusBar() string {
 	// Right side: token count + turn count + elapsed + hints
 	elapsed := time.Since(m.sessionStart).Round(time.Second)
 	right := ""
+	if m.tokenUsage.TotalTokens() > 0 {
+		right += t.StatusBarDim.Render(session.FormatTokenCount(m.tokenUsage.TotalTokens()) + " tokens")
+		right += t.StatusBarDim.Render(" · ")
+	}
 	if m.turnCount > 0 {
 		right += t.StatusBarDim.Render(fmt.Sprintf("turn %d", m.turnCount))
 		right += t.StatusBarDim.Render(" · ")
@@ -606,6 +632,28 @@ func (m *Model) renderTranscript() string {
 
 func (m *Model) renderInputArea() string {
 	return m.input.View()
+}
+
+func (m *Model) renderTokenInfo() string {
+	if m.tokenUsage.TotalTokens() == 0 {
+		return ""
+	}
+	t := m.theme
+
+	var info string
+	model := m.modelName
+	if model != "" {
+		mi := provider.LookupModel(model)
+		if mi.Limits.Context > 0 {
+			pct := float64(m.tokenUsage.TotalInput) / float64(mi.Limits.Context) * 100
+			info = fmt.Sprintf("%s (%.0f%%)", session.FormatTokenCount(m.tokenUsage.TotalTokens()), pct)
+		}
+	}
+	if info == "" {
+		info = session.FormatTokenCount(m.tokenUsage.TotalTokens()) + " tokens"
+	}
+
+	return "\n" + t.StatusBarDim.Render("  " + info)
 }
 
 func (m *Model) renderAskQuestion() string {
@@ -1084,6 +1132,14 @@ func (c *TUICallback) OnDone() {
 
 func (c *TUICallback) OnError(err error) {
 	c.program.Send(errMsg{err: err})
+}
+
+func (c *TUICallback) OnTokenUsage(usage session.SessionUsage) {
+	c.program.Send(tokenUsageMsg{usage: usage})
+}
+
+func (c *TUICallback) OnCompaction(summary string) {
+	c.program.Send(compactionMsg{summary: summary})
 }
 
 // AskFunc returns an AskFunc that sends questions to the TUI and waits for answers.

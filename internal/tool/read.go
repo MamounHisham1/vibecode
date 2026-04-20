@@ -64,23 +64,11 @@ func (ReadFile) Execute(ctx context.Context, input json.RawMessage) (json.RawMes
 		end = start + in.Limit - 1
 	}
 
-	// Extract the content portion for highlighting
-	var contentLines []string
-	for i := start - 1; i < end && i < len(lines); i++ {
-		contentLines = append(contentLines, lines[i])
-	}
-	content := strings.Join(contentLines, "\n")
-
-	// Syntax highlight
-	highlighted := highlightCode(content, abs)
-
-	highlightLines := strings.Split(highlighted, "\n")
-
 	var b strings.Builder
-	for i, hl := range highlightLines {
-		b.WriteString(strconv.Itoa(start + i))
+	for i := start - 1; i < end && i < len(lines); i++ {
+		b.WriteString(strconv.Itoa(i + 1))
 		b.WriteByte('\t')
-		b.WriteString(hl)
+		b.WriteString(lines[i])
 		b.WriteByte('\n')
 	}
 

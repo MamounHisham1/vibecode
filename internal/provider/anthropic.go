@@ -76,6 +76,13 @@ type anthropicTool struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
+type anthropicUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	CacheRead    int `json:"cache_read_input_tokens"`
+	CacheWrite   int `json:"cache_creation_input_tokens"`
+}
+
 type anthropicSSE struct {
 	Type  string          `json:"type"`
 	Index int             `json:"index,omitempty"`
@@ -92,9 +99,13 @@ type anthropicSSE struct {
 
 	// For message_start
 	Message struct {
-		ID    string `json:"id"`
-		Model string `json:"model"`
+		ID    string          `json:"id"`
+		Model string         `json:"model"`
+		Usage anthropicUsage `json:"usage"`
 	} `json:"message,omitempty"`
+
+	// For message_delta
+	Usage anthropicUsage `json:"usage,omitempty"`
 }
 
 type anthropicDelta struct {
@@ -205,6 +216,7 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 	var curBlockType string
 	var curToolID string
 	var curToolInput strings.Builder
+	var usage Usage
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -215,7 +227,7 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
-			ch <- DoneEvent{}
+			ch <- DoneEvent{Usage: &usage}
 			return
 		}
 
@@ -229,6 +241,12 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 		}
 
 		switch sse.Type {
+		case "message_start":
+			usage.InputTokens = sse.Message.Usage.InputTokens
+			usage.OutputTokens = sse.Message.Usage.OutputTokens
+			usage.CacheRead = sse.Message.Usage.CacheRead
+			usage.CacheWrite = sse.Message.Usage.CacheWrite
+
 		case "content_block_start":
 			curBlockType = sse.ContentBlock.Type
 			if curBlockType == "tool_use" {
@@ -267,8 +285,11 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 			}
 			curBlockType = ""
 
+		case "message_delta":
+			usage.OutputTokens += sse.Usage.OutputTokens
+
 		case "message_stop":
-			ch <- DoneEvent{}
+			ch <- DoneEvent{Usage: &usage}
 			return
 
 		case "error":

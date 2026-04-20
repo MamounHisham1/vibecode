@@ -21,6 +21,7 @@ import (
 	"github.com/vibecode/vibecode/internal/commands"
 	"github.com/vibecode/vibecode/internal/hooks"
 	"github.com/vibecode/vibecode/internal/provider"
+	"github.com/vibecode/vibecode/internal/session"
 	"github.com/vibecode/vibecode/internal/skills"
 	"github.com/vibecode/vibecode/internal/tool"
 	"github.com/vibecode/vibecode/internal/tui"
@@ -429,7 +430,7 @@ func runOneShot(message string, p provider.Provider, reg *tool.Registry, system 
 	defer cancel()
 
 	cb := &cliCallback{}
-	a := agent.New(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb)
+	a := agent.NewWithConfig(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb, cfg)
 	a.SetHooks(buildHooks(cfg))
 	return a.Run(ctx, message)
 }
@@ -470,7 +471,7 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 		}
 	}
 
-	a := agent.New(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb)
+	a := agent.NewWithConfig(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb, cfg)
 	a.SetHooks(buildHooks(cfg))
 
 	// Use a cancellable root context so SIGINT can exit the program.
@@ -534,6 +535,12 @@ func (c *cliCallback) OnError(err error) {
 		c.buf.Reset()
 	}
 	fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+}
+func (c *cliCallback) OnTokenUsage(usage session.SessionUsage) {
+	fmt.Fprintf(os.Stderr, "tokens: %d in / %d out | cost: $%.4f\n", usage.TotalInput, usage.TotalOutput, usage.TotalCost)
+}
+func (c *cliCallback) OnCompaction(summary string) {
+	fmt.Fprintf(os.Stderr, "[context compacted]\n")
 }
 // buildHooks creates a hook manager from config.
 func buildHooks(cfg *config.Config) *hooks.Manager {

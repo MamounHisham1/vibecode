@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/vibecode/vibecode/internal/session"
 )
 
 // SubagentRunner is a function that runs a subagent with the given system prompt,
@@ -145,6 +147,8 @@ func (c *SubagentCollector) OnError(err error) {
 	c.errors = append(c.errors, err.Error())
 	c.mu.Unlock()
 }
+func (c *SubagentCollector) OnTokenUsage(_ session.SessionUsage) {}
+func (c *SubagentCollector) OnCompaction(_ string)               {}
 // Text returns the collected text output.
 func (c *SubagentCollector) Text() string {
 	c.mu.Lock()

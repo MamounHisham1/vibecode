@@ -7,6 +7,12 @@ import (
 	"path/filepath"
 )
 
+type CompactionConfig struct {
+	Auto     bool `json:"auto"`
+	Prune    bool `json:"prune"`
+	Reserved int  `json:"reserved,omitempty"`
+}
+
 type Config struct {
 	Provider      string                     `json:"provider"`
 	Model         string                     `json:"model"`
@@ -16,6 +22,7 @@ type Config struct {
 	MaxIterations int                        `json:"max_iterations"`
 	Theme         string                     `json:"theme"`
 	Hooks         map[string]json.RawMessage `json:"hooks,omitempty"`
+	Compaction    *CompactionConfig          `json:"compaction,omitempty"`
 }
 
 func Default() *Config {
@@ -29,6 +36,11 @@ func Default() *Config {
 		AutoApprove:   []string{"read_file", "glob", "grep"},
 		MaxIterations: 50,
 		Theme:         "default",
+		Compaction: &CompactionConfig{
+			Auto:     true,
+			Prune:    true,
+			Reserved: 0,
+		},
 	}
 }
 
@@ -132,6 +144,7 @@ type Settings struct {
 	MaxIterations int                        `json:"max_iterations,omitempty"`
 	Theme         string                     `json:"theme,omitempty"`
 	Hooks         map[string]json.RawMessage `json:"hooks,omitempty"`
+	Compaction    *CompactionConfig          `json:"compaction,omitempty"`
 }
 
 // settingsFilePaths returns settings file paths in priority order (low to high).
@@ -191,5 +204,8 @@ func mergeSettings(cfg *Config, s *Settings) {
 		for k, v := range s.Hooks {
 			cfg.Hooks[k] = v
 		}
+	}
+	if s.Compaction != nil {
+		cfg.Compaction = s.Compaction
 	}
 }

@@ -40,8 +40,13 @@ type openAIRequest struct {
 	Model         string          `json:"model"`
 	Messages      []openAIMessage `json:"messages"`
 	Tools         []openAITool    `json:"tools,omitempty"`
-	Stream    bool `json:"stream"`
-	MaxTokens int  `json:"max_completion_tokens"`
+	Stream        bool            `json:"stream"`
+	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
+	MaxTokens     int             `json:"max_completion_tokens"`
+}
+
+type openAIStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type openAIMessage struct {
@@ -69,6 +74,16 @@ type openAIFunc struct {
 
 type openAISSE struct {
 	Choices []openAIChoice `json:"choices"`
+	Usage   *openAIUsage   `json:"usage,omitempty"`
+}
+
+type openAIUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	PromptTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details,omitempty"`
 }
 
 type openAIChoice struct {
@@ -176,11 +191,12 @@ func (o *OpenAIProvider) buildRequest(req Request) ([]byte, error) {
 	}
 
 	or := openAIRequest{
-		Model:     o.model,
-		Messages:  messages,
-		Tools:     tools,
-		Stream:    true,
-		MaxTokens: 16384,
+		Model:         o.model,
+		Messages:      messages,
+		Tools:         tools,
+		Stream:        true,
+		StreamOptions: &openAIStreamOptions{IncludeUsage: true},
+		MaxTokens:     16384,
 	}
 
 	return json.Marshal(or)
@@ -192,6 +208,8 @@ func (o *OpenAIProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 
 	// Track tool calls by index
 	toolCalls := make(map[int]ToolCallEvent)
+
+	var usage Usage
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -206,13 +224,21 @@ func (o *OpenAIProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 			for _, tc := range toolCalls {
 				ch <- tc
 			}
-			ch <- DoneEvent{}
+			ch <- DoneEvent{Usage: &usage}
 			return
 		}
 
 		var sse openAISSE
 		if err := json.Unmarshal([]byte(data), &sse); err != nil {
 			continue
+		}
+
+		if sse.Usage != nil {
+			usage.InputTokens = sse.Usage.PromptTokens
+			usage.OutputTokens = sse.Usage.CompletionTokens
+			if sse.Usage.PromptTokensDetails != nil {
+				usage.CacheRead = sse.Usage.PromptTokensDetails.CachedTokens
+			}
 		}
 
 		for _, choice := range sse.Choices {
@@ -225,7 +251,6 @@ func (o *OpenAIProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 			for _, tc := range delta.ToolCalls {
 				existing, ok := toolCalls[tc.Index]
 				if !ok {
-					// New tool call
 					existing = ToolCallEvent{
 						ID:    tc.ID,
 						Name:  tc.Function.Name,
@@ -233,7 +258,6 @@ func (o *OpenAIProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 					}
 					toolCalls[tc.Index] = existing
 				} else {
-					// Accumulating arguments
 					if tc.Function.Name != "" {
 						existing.Name = tc.Function.Name
 					}
@@ -241,7 +265,6 @@ func (o *OpenAIProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 						existing.ID = tc.ID
 					}
 					if tc.Function.Arguments != "" {
-						// Append to input
 						existing.Input = append(existing.Input, json.RawMessage(tc.Function.Arguments)...)
 					}
 					toolCalls[tc.Index] = existing

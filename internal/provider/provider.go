@@ -60,7 +60,16 @@ type ToolCallEvent struct {
 
 func (ToolCallEvent) isEvent() {}
 
-type DoneEvent struct{}
+type Usage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	CacheRead    int `json:"cache_read_input_tokens,omitempty"`
+	CacheWrite   int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+type DoneEvent struct {
+	Usage *Usage
+}
 
 func (DoneEvent) isEvent() {}
 
