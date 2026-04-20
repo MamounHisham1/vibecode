@@ -102,11 +102,18 @@ func run(cmd *cobra.Command, args []string) error {
 
 	p, err := buildProvider(cfg)
 	if err != nil {
-		return err
+		// For one-shot mode, fail fast. For interactive mode, open the TUI
+		// so the user can fix configuration via /model or /config.
+		if len(args) == 1 {
+			return err
+		}
+		p = nil
 	}
 
 	// Agent tool: inject a runner that creates subagents
-	reg.Register(tool.NewAgentTool(reg, makeSubagentRunner(p, cfg), dir))
+	// Use a closure-captured provider so subagents pick up model switches.
+	currentProvider := p
+	reg.Register(tool.NewAgentTool(reg, makeSubagentRunner(func() provider.Provider { return currentProvider }, cfg), dir))
 
 	system := buildSystemPrompt(dir)
 
@@ -120,7 +127,7 @@ func run(cmd *cobra.Command, args []string) error {
 		return runOneShot(args[0], p, reg, system, cfg)
 	}
 
-	return runInteractive(p, reg, system, cfg, dir)
+	return runInteractive(p, reg, system, cfg, dir, &currentProvider)
 }
 
 func configFileExists() bool {
@@ -160,8 +167,12 @@ func buildToolRegistry() *tool.Registry {
 }
 
 // makeSubagentRunner returns a function that creates and runs a subagent.
-func makeSubagentRunner(p provider.Provider, cfg *config.Config) tool.SubagentRunner {
+func makeSubagentRunner(getProvider func() provider.Provider, cfg *config.Config) tool.SubagentRunner {
 	return func(ctx context.Context, systemPrompt string, reg *tool.Registry, prompt string) (string, error) {
+		p := getProvider()
+		if p == nil {
+			return "", fmt.Errorf("no provider configured — use /model to select a provider and model")
+		}
 		cb := &tool.SubagentCollector{}
 		a := agent.New(p, reg, systemPrompt, 50, nil, cb)
 		if err := a.Run(ctx, prompt); err != nil {
@@ -435,11 +446,12 @@ func runOneShot(message string, p provider.Provider, reg *tool.Registry, system 
 	return a.Run(ctx, message)
 }
 
-func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg *config.Config, dir string) error {
+func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg *config.Config, dir string, providerPtr *provider.Provider) error {
 	inputChan := make(chan string, 16)
 
 	m := tui.New(inputChan)
 	m.SetStatus(cfg.Model, dir)
+	m.SetProviderName(cfg.Provider)
 
 	// Wire slash commands
 	cmdReg := commands.NewRegistry()
@@ -472,8 +484,36 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 		}
 	}
 
-	a := agent.NewWithConfig(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb, cfg)
-	a.SetHooks(buildHooks(cfg))
+	// Agent is created lazily so the TUI can open even without a valid provider.
+	var a *agent.Agent
+	if p != nil {
+		a = agent.NewWithConfig(p, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb, cfg)
+		a.SetHooks(buildHooks(cfg))
+	} else {
+		m.AppendSystemMessage("Configuration incomplete. Use /model to choose a provider and model, or /config to set your API key.", true)
+	}
+
+	// Model switch handler: rebuild provider, save config, update or create agent.
+	m.SetModelChangeHandler(func(providerID, modelID string) error {
+		cfg.Provider = providerID
+		cfg.Model = modelID
+		if err := cfg.Save(); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
+		newProvider, err := buildProvider(cfg)
+		if err != nil {
+			return err
+		}
+		*providerPtr = newProvider
+		if a != nil {
+			a.SetProvider(newProvider)
+			a.SetModel(modelID)
+		} else {
+			a = agent.NewWithConfig(newProvider, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb, cfg)
+			a.SetHooks(buildHooks(cfg))
+		}
+		return nil
+	})
 
 	// Use a cancellable root context so SIGINT can exit the program.
 	// Per-turn cancellation is handled by giving each Run() its own child context.
@@ -482,6 +522,17 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 
 	go func() {
 		for msg := range inputChan {
+			if *providerPtr == nil {
+				cb.OnError(fmt.Errorf("No provider configured. Use /model to select a provider and model, or /config to set your API key."))
+				continue
+			}
+
+			// Lazily create the agent on first message if it wasn't created upfront.
+			if a == nil {
+				a = agent.NewWithConfig(*providerPtr, reg, system, cfg.MaxIterations, cfg.AutoApprove, cb, cfg)
+				a.SetHooks(buildHooks(cfg))
+			}
+
 			// Create a fresh child context for each turn so that cancelling one
 			// turn (e.g. user presses Ctrl+C to stop generation) does not kill
 			// subsequent turns.

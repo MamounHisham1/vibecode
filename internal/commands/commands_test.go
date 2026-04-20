@@ -80,7 +80,7 @@ func TestBuiltinCommands(t *testing.T) {
 	// model
 	cmd, _ = r.Lookup("model")
 	result = cmd.Handler("")
-	if !strings.Contains(result.Output, "Usage") {
+	if !strings.Contains(result.Output, "picker") {
 		t.Errorf("model (no args) = %q", result.Output)
 	}
 	result = cmd.Handler("gpt-4o")

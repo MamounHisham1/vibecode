@@ -86,6 +86,20 @@ func (a *Agent) SetHooks(h *hooks.Manager) {
 	a.hooks = h
 }
 
+// SetProvider swaps the LLM provider at runtime.
+func (a *Agent) SetProvider(p provider.Provider) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.provider = p
+}
+
+// SetModel updates the model identifier used by the agent.
+func (a *Agent) SetModel(model string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.model = model
+}
+
 func (a *Agent) nextCallID() string {
 	a.callCounter++
 	return fmt.Sprintf("call_%d", a.callCounter)

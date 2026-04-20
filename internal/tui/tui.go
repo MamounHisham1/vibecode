@@ -75,6 +75,7 @@ type Model struct {
 	toolIndex    map[string]int
 	status       string
 	modelName    string
+	providerName string
 	dir          string
 	quitting     bool
 	waiting      bool
@@ -101,9 +102,16 @@ type Model struct {
 	// Command handler
 	commandHandler func(cmdName, args string) (string, bool) // returns (output, clearHistory)
 
+	// Model change handler: called when user selects a new model from the picker.
+	// Returns an error if the provider could not be built.
+	modelChangeHandler func(providerID, modelID string) error
+
 	// Autocomplete
 	autocomplete AutocompleteModel
 	cmdRegistry  *commands.Registry
+
+	// Model picker
+	modelPicker ModelPicker
 
 	// Ask user question state
 	askQuestion string
@@ -189,6 +197,7 @@ func New(inputChan chan<- string) *Model {
 		theme:        theme,
 		input:        input,
 		autocomplete: NewAutocompleteModel(theme),
+		modelPicker:  NewModelPicker(theme),
 		entries:      nil,
 		streamBuf:    &strings.Builder{},
 		toolIndex:    make(map[string]int),
@@ -228,9 +237,56 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(m.inputTextWidth())
 		m.input.SetMaxLines(m.height / 2)
 		m.autocomplete.SetWidth(m.width)
+		m.modelPicker.SetSize(m.width, m.height)
 		return m, nil
 
 	case tea.KeyMsg:
+		// Model picker takes precedence when visible
+		if m.modelPicker.Visible() {
+			switch msg.String() {
+			case "up", "ctrl+p":
+				m.modelPicker.Up()
+				return m, nil
+			case "down", "ctrl+n":
+				m.modelPicker.Down()
+				return m, nil
+			case "enter":
+				if item, ok := m.modelPicker.Selected(); ok {
+					m.modelPicker.Close()
+					if m.modelChangeHandler != nil {
+						if err := m.modelChangeHandler(item.ProviderID, item.ModelID); err != nil {
+							m.appendSystemMessage(fmt.Sprintf("Failed to switch model: %s", err), true)
+						} else {
+							m.appendSystemMessage(fmt.Sprintf("Switched to %s (%s)", item.ModelName, item.ProviderName), false)
+							m.SetStatus(item.ModelID, m.dir)
+						}
+					}
+				}
+				return m, nil
+			case "esc", "ctrl+c":
+				m.modelPicker.Close()
+				return m, nil
+			case "backspace":
+				m.modelPicker.Backspace()
+				return m, nil
+			case "ctrl+u":
+				m.modelPicker.ClearSearch()
+				return m, nil
+			case " ":
+				m.modelPicker.TypeRune(' ')
+				return m, nil
+			default:
+				// Route printable characters to the model picker search
+				if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+					for _, r := range msg.Runes {
+						m.modelPicker.TypeRune(r)
+					}
+					return m, nil
+				}
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "shift+up", "pgup":
 			m.scrollOffset += 10
@@ -307,6 +363,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if name != "" {
 					m.input.SetValue("/" + name)
 					m.autocomplete.Dismiss()
+
+					// Special case: /model with no args opens the interactive picker
+					if name == "model" {
+						m.modelPicker.Open(m.providerName, m.modelName)
+						m.input.Reset()
+						m.welcome = false
+						return m, nil
+					}
+
 					// Now process as a slash command
 					if m.commandHandler != nil {
 						output, clearHist := m.commandHandler(name, "")
@@ -341,6 +406,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(parts) > 1 {
 					cmdArgs = parts[1]
 				}
+
+				// Special case: /model with no args opens the interactive picker
+				if cmdName == "model" && cmdArgs == "" {
+					m.modelPicker.Open(m.providerName, m.modelName)
+					m.input.Reset()
+					m.welcome = false
+					return m, nil
+				}
+
 				output, clearHist := m.commandHandler(cmdName, cmdArgs)
 				m.input.Reset()
 				m.welcome = false
@@ -536,12 +610,18 @@ func (m *Model) View() string {
 		b.WriteString("\n" + content)
 	}
 
-	// Input area
+	// Input area (or model picker when open)
 	b.WriteString("\n\n")
-	b.WriteString(m.renderInputArea())
+	if m.modelPicker.Visible() {
+		b.WriteString(m.modelPicker.View())
+	} else {
+		b.WriteString(m.renderInputArea())
+	}
 
 	// Token info below input
-	b.WriteString(m.renderTokenInfo())
+	if !m.modelPicker.Visible() {
+		b.WriteString(m.renderTokenInfo())
+	}
 
 	fullView := b.String()
 
@@ -1020,6 +1100,11 @@ func (m *Model) appendSystemMessage(text string, isError bool) {
 	})
 }
 
+// AppendSystemMessage adds a system message to the transcript (public API).
+func (m *Model) AppendSystemMessage(text string, isError bool) {
+	m.appendSystemMessage(text, isError)
+}
+
 func (m *Model) addToolEntry(name, id string, input json.RawMessage) {
 	label, args := summarizeToolCall(name, input)
 	m.entries = append(m.entries, transcriptItem{
@@ -1111,6 +1196,16 @@ func (m *Model) SetStatus(model, dir string) {
 	m.modelName = model
 	m.dir = dir
 	m.status = fmt.Sprintf("%s · %s", model, shortenPath(dir))
+}
+
+// SetProviderName sets the current provider identifier.
+func (m *Model) SetProviderName(name string) {
+	m.providerName = name
+}
+
+// SetModelChangeHandler sets the handler called when the user selects a new model.
+func (m *Model) SetModelChangeHandler(fn func(providerID, modelID string) error) {
+	m.modelChangeHandler = fn
 }
 
 func (m *Model) advanceSpinnerVerb() {
