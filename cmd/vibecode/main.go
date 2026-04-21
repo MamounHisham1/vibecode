@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/vibecode/vibecode/config"
 	"github.com/vibecode/vibecode/internal/agent"
@@ -28,12 +29,17 @@ import (
 )
 
 func renderMarkdownCLI(text string) string {
-	return tui.RenderMarkdown(text)
+	width := 100
+	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 20 {
+		width = w
+	}
+	return tui.RenderMarkdown(text, width)
 }
 
 var (
 	flagProvider string
 	flagModel    string
+	version      = "dev"
 )
 
 func main() {
@@ -402,6 +408,7 @@ func runInteractive(p provider.Provider, reg *tool.Registry, system string, cfg 
 	m := tui.New(inputChan)
 	m.SetStatus(cfg.Model, dir)
 	m.SetProviderName(cfg.Provider)
+	m.SetVersion(version)
 
 	// API key checker: determines which providers have configured keys.
 	hasKey := func(prov string) bool {

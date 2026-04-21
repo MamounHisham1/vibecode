@@ -151,6 +151,9 @@ type Model struct {
 
 	// Plan mode
 	planMode bool
+
+	// Version display
+	version string
 }
 
 type transcriptItem struct {
@@ -1202,20 +1205,38 @@ func (m *Model) renderEntry(entry transcriptItem) string {
 
 func (m *Model) renderUserEntry(text string) string {
 	t := m.theme
-	w := max(20, m.transcriptWidth()-4)
-	wrapped := wordwrap.String(strings.TrimRight(text, "\n"), w)
-
 	prefix := t.UserPointer.Render(userPointer + " ")
-	return prefix + t.UserText.Render(wrapped)
+	indent := strings.Repeat(" ", lipgloss.Width(prefix))
+
+	contentWidth := max(20, m.transcriptWidth()-lipgloss.Width(prefix))
+	wrapped := wordwrap.String(strings.TrimRight(text, "\n"), contentWidth)
+	lines := strings.Split(wrapped, "\n")
+
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		var rawLine string
+		if i == 0 {
+			rawLine = prefix + t.UserText.Render(line)
+		} else {
+			rawLine = indent + t.UserText.Render(line)
+		}
+		padded := padLineToVisualWidth(rawLine, m.transcriptWidth())
+		b.WriteString(t.UserBg.Render(padded))
+	}
+	return b.String()
 }
 
 func (m *Model) renderAssistantEntry(text string) string {
 	t := m.theme
 	dot := t.AssistantDot.Render(assistantDot + " ")
+	mdWidth := max(20, m.transcriptWidth()-lipgloss.Width(dot))
 	return gutterBlock(
 		dot,
 		"  ",
-		RenderMarkdown(text),
+		RenderMarkdown(text, mdWidth),
 	)
 }
 
@@ -1368,45 +1389,49 @@ func (m *Model) renderThinkingState() string {
 func (m *Model) renderWelcome() string {
 	t := m.theme
 	var b strings.Builder
+	w := m.transcriptWidth()
 
 	b.WriteString("\n")
 
-	// ASCII Art Title
-	titleLines := []string{
-		"██╗   ██╗██╗██████╗ ███████╗ ██████╗    ██████╗ ███████╗ ██████╗ ███████╗",
-		"██║   ██║██║██╔══██╗██╔════╝██╔═══██╗   ██╔══██╗██╔════╝██╔═══██╗██╔════╝",
-		"██║   ██║██║██║  ██║█████╗  ██║   ██║   ██████╔╝█████╗  ██║   ██║███████╗",
-		"╚██╗ ██╔╝██║██║  ██║██╔══╝  ██║   ██║   ██╔══██╗██╔══╝  ██║   ██║╚════██║",
-		" ╚████╔╝ ██║██████╔╝███████╗╚██████╔╝   ██║  ██║███████╗╚██████╔╝███████║",
-		"  ╚═══╝  ╚═╝╚═════╝ ╚══════╝ ╚═════╝    ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚══════╝",
-	}
-
-	maxW := m.transcriptWidth()
-	for _, line := range titleLines {
-		if len(line) > maxW {
-			continue
+	// ── Header ──────────────────────────────────────────────
+	// Compact brand header that works on narrow terminals
+	brandLine := "  " + t.AssistantDot.Render(assistantDot+" ") + t.WelcomeTitle.Render("vibe code")
+	if m.version != "" && m.version != "dev" {
+		versionTag := t.WelcomeVersion.Render("v" + m.version)
+		// Right-align version if there's room
+		pad := w - lipgloss.Width(brandLine) - lipgloss.Width(versionTag) - 2
+		if pad > 2 {
+			brandLine += strings.Repeat(" ", pad) + versionTag
+		} else {
+			brandLine += "  " + versionTag
 		}
-		b.WriteString("  " + t.WelcomeBorder.Render(line) + "\n")
 	}
-
+	b.WriteString(brandLine + "\n")
+	b.WriteString("  " + t.WelcomeSubtitle.Render("AI-powered coding agent for your terminal") + "\n")
 	b.WriteString("\n")
 
-	// Subtitle
-	subtitle := "AI-powered coding agent for your terminal"
-	b.WriteString("  " + t.WelcomeSubtitle.Render(subtitle) + "\n")
-	b.WriteString("\n")
-
-	// Model info
-	if m.status != "" {
-		b.WriteString("  " + t.Dim.Render("Model: ") + t.Text.Render(m.status) + "\n")
+	// ── Session info ────────────────────────────────────────
+	var infoParts []string
+	if m.modelName != "" {
+		infoParts = append(infoParts, t.Dim.Render("Model: ")+t.Text.Render(m.modelName))
+	}
+	if m.providerName != "" {
+		infoParts = append(infoParts, t.Dim.Render("Provider: ")+t.Text.Render(m.providerName))
+	}
+	if m.dir != "" {
+		infoParts = append(infoParts, t.Dim.Render("Dir: ")+t.Text.Render(shortenPath(m.dir)))
+	}
+	if len(infoParts) > 0 {
+		infoLine := "  " + strings.Join(infoParts, t.Dim.Render("  ·  "))
+		b.WriteString(infoLine + "\n")
 		b.WriteString("\n")
 	}
 
-	// Quick start tips with styled keys
-	b.WriteString("  " + t.Bold.Render("Getting started") + "\n")
+	// ── Keyboard Shortcuts ──────────────────────────────────
+	b.WriteString("  " + t.Bold.Render("Keyboard shortcuts") + "\n")
 	b.WriteString("\n")
 
-	tips := []struct {
+	shortcuts := []struct {
 		key  string
 		desc string
 	}{
@@ -1414,10 +1439,69 @@ func (m *Model) renderWelcome() string {
 		{"shift+enter", "New line (multi-line input)"},
 		{"ctrl+o", "Expand/collapse tool output"},
 		{"ctrl+c", "Stop generation or exit"},
+		{"shift+↑ / pgup", "Scroll up"},
+		{"shift+↓ / pgdn", "Scroll down"},
+		{"tab", "Autocomplete slash commands"},
 	}
 
+	keyWidth := 0
+	for _, s := range shortcuts {
+		if kw := lipgloss.Width(s.key); kw > keyWidth {
+			keyWidth = kw
+		}
+	}
+	keyWidth += 2 // padding
+
+	for _, s := range shortcuts {
+		paddedKey := s.key + strings.Repeat(" ", max(0, keyWidth-lipgloss.Width(s.key)))
+		b.WriteString("  " + t.WelcomeKey.Render(paddedKey) + t.WelcomeDesc.Render(s.desc) + "\n")
+	}
+
+	b.WriteString("\n")
+
+	// ── Slash Commands ──────────────────────────────────────
+	b.WriteString("  " + t.Bold.Render("Slash commands") + "\n")
+	b.WriteString("\n")
+
+	cmds := []struct {
+		name string
+		desc string
+	}{
+		{"/help", "Show available commands and shortcuts"},
+		{"/clear", "Clear conversation history"},
+		{"/compact", "Manually trigger context compaction"},
+		{"/model", "Switch AI model or provider"},
+		{"/config", "Show or edit configuration"},
+		{"/usage", "Show token usage and cost"},
+	}
+
+	cmdWidth := 0
+	for _, c := range cmds {
+		if cw := lipgloss.Width(c.name); cw > cmdWidth {
+			cmdWidth = cw
+		}
+	}
+	cmdWidth += 2
+
+	for _, c := range cmds {
+		paddedCmd := c.name + strings.Repeat(" ", max(0, cmdWidth-lipgloss.Width(c.name)))
+		b.WriteString("  " + t.WelcomeKey.Render(paddedCmd) + t.WelcomeDesc.Render(c.desc) + "\n")
+	}
+
+	b.WriteString("\n")
+
+	// ── Tips ────────────────────────────────────────────────
+	b.WriteString("  " + t.Bold.Render("Tips") + "\n")
+	b.WriteString("\n")
+
+	tips := []string{
+		"Start with a specific task like \"fix the bug in main.go\"",
+		"Use /model anytime to switch providers mid-session",
+		"Press ctrl+o to expand tool results and see full output",
+		"Multi-line input: type \\ at the end of a line, then press enter",
+	}
 	for _, tip := range tips {
-		b.WriteString("  " + t.WelcomeKey.Render("  "+tip.key) + "  " + t.WelcomeDesc.Render(tip.desc) + "\n")
+		b.WriteString("  " + t.WelcomeTip.Render("• ") + t.WelcomeDesc.Render(tip) + "\n")
 	}
 
 	b.WriteString("\n")
@@ -1557,6 +1641,11 @@ func (m *Model) SetStatus(model, dir string) {
 // SetProviderName sets the current provider identifier.
 func (m *Model) SetProviderName(name string) {
 	m.providerName = name
+}
+
+// SetVersion sets the version string displayed on the welcome screen.
+func (m *Model) SetVersion(v string) {
+	m.version = v
 }
 
 // SetModelChangeHandler sets the handler called when the user selects a new model.
@@ -2025,6 +2114,16 @@ func shortenPath(p string) string {
 		return "~" + p[len(abs):]
 	}
 	return p
+}
+
+// padLineToVisualWidth pads a string with trailing spaces so its visual width
+// (ignoring ANSI escape codes) equals targetWidth.
+func padLineToVisualWidth(line string, targetWidth int) string {
+	w := ansi.StringWidth(line)
+	if w < targetWidth {
+		return line + strings.Repeat(" ", targetWidth-w)
+	}
+	return line
 }
 
 func min(a, b int) int {

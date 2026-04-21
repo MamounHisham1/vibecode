@@ -82,6 +82,8 @@ type Theme struct {
 	WelcomeTip      lipgloss.Style
 	WelcomeKey      lipgloss.Style
 	WelcomeDesc     lipgloss.Style
+	WelcomeVersion  lipgloss.Style
+	WelcomeBox      lipgloss.Style
 }
 
 func DefaultTheme() Theme {
@@ -168,5 +170,7 @@ func DefaultTheme() Theme {
 		WelcomeTip:      lipgloss.NewStyle().Foreground(lipgloss.Color("#5A5A5A")),
 		WelcomeKey:      lipgloss.NewStyle().Foreground(brandLight).Bold(true),
 		WelcomeDesc:     lipgloss.NewStyle().Foreground(lipgloss.Color("#6B6B6B")),
+		WelcomeVersion:  lipgloss.NewStyle().Foreground(lipgloss.Color("#555555")),
+		WelcomeBox:      lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#333333")).Padding(0, 1),
 	}
 }
