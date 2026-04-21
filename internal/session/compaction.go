@@ -10,9 +10,12 @@ import (
 	"github.com/vibecode/vibecode/internal/provider"
 )
 
+// pruneProtectRatio and pruneMinimumRatio define the default fractions of the
+// effective context window used for pruning decisions. They replace the prior
+// hard-coded absolute values so pruning scales correctly across model sizes.
 const (
-	pruneProtect = 40000
-	pruneMinimum = 20000
+	pruneProtectRatio = 0.20 // protect newest ~20% of context
+	pruneMinimumRatio = 0.10 // only prune if we can free ~10%
 )
 
 type CompactionConfig struct {
@@ -128,51 +131,60 @@ func buildCompactionPrompt(history []provider.Message) string {
 	return conv.String()
 }
 
-func PruneHistory(history []provider.Message, cfg *CompactionConfig) []provider.Message {
+func PruneHistory(history []provider.Message, cfg *CompactionConfig, modelID string) []provider.Message {
 	if cfg != nil && !cfg.Prune {
 		return history
 	}
 
+	m := provider.LookupModel(modelID)
+	contextWindow := m.Limits.Context
+	if contextWindow == 0 {
+		contextWindow = 200000
+	}
+	effectiveContext := contextWindow - provider.MaxOutputTokens(modelID)
+	if effectiveContext <= 0 {
+		effectiveContext = contextWindow
+	}
+
+	pruneProtect := int(float64(effectiveContext) * pruneProtectRatio)
+	pruneMinimum := int(float64(effectiveContext) * pruneMinimumRatio)
+
 	pruned := make([]provider.Message, len(history))
 	copy(pruned, history)
 
-	totalEstimate := 0
+	// Walk backward (newest first) to protect recent tool results.
+	protected := 0
+	var toPrune []struct{ msgIdx, blockIdx int; estimate int }
+	prunableTotal := 0
+
 	for i := len(pruned) - 1; i >= 0; i-- {
-		msg := pruned[i]
-		if msg.Role != "user" {
-			continue
-		}
-		for _, block := range msg.Content {
-			if block.Type == "tool_result" {
-				totalEstimate += EstimateTokens(string(block.Result))
-			}
-		}
-	}
-
-	if totalEstimate < pruneMinimum {
-		return pruned
-	}
-
-	runningTotal := 0
-	pruneThreshold := totalEstimate - pruneProtect
-
-	for i := 0; i < len(pruned)-4 && runningTotal < pruneThreshold; i++ {
 		msg := pruned[i]
 		if msg.Role != "user" {
 			continue
 		}
 		for j := range msg.Content {
 			block := &msg.Content[j]
-			if block.Type == "tool_result" {
-				tokenEstimate := EstimateTokens(string(block.Result))
-				runningTotal += tokenEstimate
-				if runningTotal < pruneThreshold {
-					result := "[Old tool result content cleared]"
-					block.Result = json.RawMessage(fmt.Sprintf("%q", result))
-				}
+			if block.Type != "tool_result" {
+				continue
+			}
+			estimate := EstimateTokens(string(block.Result))
+			if protected+estimate > pruneProtect {
+				toPrune = append(toPrune, struct{ msgIdx, blockIdx int; estimate int }{i, j, estimate})
+				prunableTotal += estimate
+			} else {
+				protected += estimate
 			}
 		}
-		pruned[i] = msg
+	}
+
+	if prunableTotal < pruneMinimum {
+		return pruned
+	}
+
+	for _, idx := range toPrune {
+		block := &pruned[idx.msgIdx].Content[idx.blockIdx]
+		result := "[Old tool result content cleared]"
+		block.Result = json.RawMessage(fmt.Sprintf("%q", result))
 	}
 
 	return pruned

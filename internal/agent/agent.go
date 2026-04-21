@@ -54,6 +54,13 @@ type Agent struct {
 	compaction   *session.Compactor
 	sessionUsage session.SessionUsage
 	cfg          *config.Config
+
+	// Context-size anchoring for accurate cumulative token tracking.
+	// lastContextSize is the best-known context-window size (from API usage
+	// plus estimates for messages added after the call).
+	// lastContextHistoryLen is len(history) at the time lastContextSize was recorded.
+	lastContextSize     int
+	lastContextHistoryLen int
 }
 
 func New(p provider.Provider, reg *tool.Registry, system string, maxIter int, autoApprove []string, cb Callback) *Agent {
@@ -109,13 +116,37 @@ func (a *Agent) nextCallID() string {
 func (a *Agent) Run(ctx context.Context, userMsg string) error {
 	a.mu.Lock()
 	a.history = append(a.history, provider.UserMessage(userMsg))
+	// New user message invalidates the anchor because it wasn't part of the
+	// last API-reported context size.
+	a.lastContextSize = 0
+	a.lastContextHistoryLen = 0
 	a.mu.Unlock()
 
 	toolDefs := a.buildToolDefs()
 
 	for i := 0; i < a.maxIter; i++ {
 		if a.cfg != nil {
-			a.history = session.PruneHistory(a.history, toSessionCompaction(a.cfg.Compaction))
+			a.history = session.PruneHistory(a.history, toSessionCompaction(a.cfg.Compaction), a.model)
+		}
+
+		// Estimate the current context-window size BEFORE the API call.
+		// If we have an anchor from a previous turn we use it and estimate
+		// only the delta, which is far more accurate than estimating the
+		// entire history from scratch every time.
+		a.mu.Lock()
+		contextSize := session.EstimateContextSize(a.system, a.history, a.lastContextSize, a.lastContextHistoryLen)
+		a.mu.Unlock()
+
+		// Proactive overflow check: compact BEFORE we hit the API limit.
+		if a.cfg != nil && a.compaction != nil && a.model != "" {
+			if session.IsOverflow(toSessionCompaction(a.cfg.Compaction), contextSize, a.model) {
+				log.Printf("context overflow detected (tokens=%d), triggering auto-compaction", contextSize)
+				if err := a.autoCompact(ctx); err != nil {
+					log.Printf("auto-compaction failed: %v", err)
+				} else {
+					a.cb.OnTokenUsage(a.sessionUsage)
+				}
+			}
 		}
 
 		req := provider.Request{
@@ -183,6 +214,7 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 					Read:  stepUsage.CacheRead,
 					Write: stepUsage.CacheWrite,
 				},
+				Total: stepUsage.TotalTokens,
 			}
 		} else {
 			tokenUsage = estimated
@@ -194,25 +226,22 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 		if tokenUsage.Output < estimated.Output {
 			tokenUsage.Output = estimated.Output
 		}
+		// If the API didn't report a total, fall back to our estimate.
+		if tokenUsage.Total == 0 {
+			tokenUsage.Total = session.TotalTokens(tokenUsage)
+		}
 
 		cost := session.GetCost(tokenUsage, a.model)
 		a.sessionUsage.AddStep(session.StepUsage{Tokens: tokenUsage, Cost: cost})
 		a.cb.OnTokenUsage(a.sessionUsage)
 
-		if a.cfg != nil && a.compaction != nil && a.model != "" {
-			if session.IsOverflow(toSessionCompaction(a.cfg.Compaction), tokenUsage, a.model) {
-				log.Printf("context overflow detected (tokens=%d), triggering auto-compaction", session.TotalTokens(tokenUsage))
-				if err := a.autoCompact(ctx); err != nil {
-					log.Printf("auto-compaction failed: %v", err)
-				} else {
-					a.cb.OnTokenUsage(a.sessionUsage)
-				}
-			}
-		}
-
 		if len(toolCalls) == 0 {
 			a.mu.Lock()
 			a.history = append(a.history, provider.AssistantTextMessage(fullText))
+			// Update anchor: post-call size = API-reported total (assistant output
+			// is already included in that total; there are no tool results).
+			a.lastContextSize = tokenUsage.Total
+			a.lastContextHistoryLen = len(a.history)
 			a.mu.Unlock()
 			a.cb.OnDone()
 			return nil
@@ -322,6 +351,14 @@ func (a *Agent) Run(ctx context.Context, userMsg string) error {
 
 		a.mu.Lock()
 		a.history = append(a.history, toolResults...)
+		// Update anchor: API-reported total + estimate of tool results added
+		// after the call. This becomes the baseline for the next iteration.
+		postCallSize := tokenUsage.Total
+		for _, tr := range toolResults {
+			postCallSize += session.EstimateMessageTokens(tr)
+		}
+		a.lastContextSize = postCallSize
+		a.lastContextHistoryLen = len(a.history)
 		a.mu.Unlock()
 
 		continue
@@ -344,6 +381,9 @@ func (a *Agent) autoCompact(ctx context.Context) error {
 	if summary != "" {
 		a.mu.Lock()
 		a.history = compacted
+		// Compaction replaces history, so the old anchor is meaningless.
+		a.lastContextSize = 0
+		a.lastContextHistoryLen = 0
 		a.mu.Unlock()
 		a.cb.OnCompaction(summary)
 		log.Printf("auto-compaction complete, history reduced to %d messages", len(compacted))

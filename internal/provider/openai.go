@@ -239,6 +239,9 @@ func (o *OpenAIProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 			if sse.Usage.PromptTokensDetails != nil {
 				usage.CacheRead = sse.Usage.PromptTokensDetails.CachedTokens
 			}
+			// For OpenAI, cache is already included in PromptTokens, so TotalTokens
+			// is simply prompt + completion to avoid double-counting cache.
+			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 		}
 
 		for _, choice := range sse.Choices {

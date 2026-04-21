@@ -12,6 +12,9 @@ type TokenUsage struct {
 	Output    int
 	Reasoning int
 	Cache     CacheTokens
+	// Total is the provider-reported total context-window size.
+	// When non-zero it takes precedence over summing individual fields.
+	Total int
 }
 
 type StepUsage struct {
@@ -29,6 +32,9 @@ func GetCost(tokens TokenUsage, modelID string) float64 {
 }
 
 func TotalTokens(u TokenUsage) int {
+	if u.Total > 0 {
+		return u.Total
+	}
 	return u.Input + u.Output + u.Reasoning + u.Cache.Read + u.Cache.Write
 }
 

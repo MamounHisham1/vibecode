@@ -65,6 +65,10 @@ type Usage struct {
 	OutputTokens int `json:"output_tokens"`
 	CacheRead    int `json:"cache_read_input_tokens,omitempty"`
 	CacheWrite   int `json:"cache_creation_input_tokens,omitempty"`
+	// TotalTokens is the complete context-window size reported by the provider.
+	// For Anthropic this is input+output+cache; for OpenAI it is input+output
+	// (cache is already included in input). Providers must set this explicitly.
+	TotalTokens int `json:"total_tokens,omitempty"`
 }
 
 type DoneEvent struct {

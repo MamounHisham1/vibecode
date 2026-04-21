@@ -107,5 +107,5 @@ func UsableInput(modelID string) int {
 	if m.Limits.Input > 0 {
 		return m.Limits.Input
 	}
-	return m.Limits.Context - MaxOutputTokens(modelID)
+	return m.Limits.Context
 }

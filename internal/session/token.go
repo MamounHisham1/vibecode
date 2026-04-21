@@ -15,20 +15,28 @@ func EstimateTokens(input string) int {
 	return len(input) / charsPerToken
 }
 
+func EstimateMessageTokens(msg provider.Message) int {
+	total := 0
+	for _, block := range msg.Content {
+		switch block.Type {
+		case "text":
+			total += EstimateTokens(block.Text)
+		case "tool_use":
+			total += EstimateTokens(string(block.Input))
+			total += EstimateTokens(block.ToolName)
+		case "tool_result":
+			total += EstimateTokens(string(block.Result))
+		}
+	}
+	// Message overhead: role label, formatting tokens, etc.
+	total += 4
+	return total
+}
+
 func EstimateRequestTokens(system string, msgs []provider.Message) int {
 	total := EstimateTokens(system)
 	for _, msg := range msgs {
-		for _, block := range msg.Content {
-			switch block.Type {
-			case "text":
-				total += EstimateTokens(block.Text)
-			case "tool_use":
-				total += EstimateTokens(string(block.Input))
-				total += EstimateTokens(block.ToolName)
-			case "tool_result":
-				total += EstimateTokens(string(block.Result))
-			}
-		}
+		total += EstimateMessageTokens(msg)
 	}
 	return total
 }
@@ -56,4 +64,19 @@ func EstimateStepTokens(system string, history []provider.Message, outputText st
 		Input:  input,
 		Output: output,
 	}
+}
+
+// EstimateContextSize estimates the current context-window size.
+// If anchorUsage/anchorLen are provided, it anchors to the last known
+// API-reported size and estimates only the delta, giving much better
+// accuracy than estimating the entire history from scratch each time.
+func EstimateContextSize(system string, history []provider.Message, anchorSize int, anchorLen int) int {
+	if anchorSize > 0 && anchorLen > 0 && anchorLen <= len(history) {
+		size := anchorSize
+		for i := anchorLen; i < len(history); i++ {
+			size += EstimateMessageTokens(history[i])
+		}
+		return size
+	}
+	return EstimateRequestTokens(system, history)
 }

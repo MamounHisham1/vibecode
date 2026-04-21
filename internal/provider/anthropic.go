@@ -246,6 +246,7 @@ func (a *AnthropicProvider) streamSSE(reader io.Reader, ch chan<- Event) {
 			usage.OutputTokens = sse.Message.Usage.OutputTokens
 			usage.CacheRead = sse.Message.Usage.CacheRead
 			usage.CacheWrite = sse.Message.Usage.CacheWrite
+			usage.TotalTokens = usage.InputTokens + usage.OutputTokens + usage.CacheRead + usage.CacheWrite
 
 		case "content_block_start":
 			curBlockType = sse.ContentBlock.Type
