@@ -855,13 +855,13 @@ func (m *Model) View() string {
 
 	var b strings.Builder
 
-	// Status bar
-	b.WriteString(m.renderStatusBar())
-
-	// Welcome screen
+	// Welcome screen (skip status bar to avoid duplication)
 	if m.welcome && len(m.entries) == 0 && m.streamBuf.Len() == 0 && len(m.toolIndex) == 0 {
 		b.WriteString("\n")
 		b.WriteString(m.renderWelcome())
+	} else {
+		// Status bar
+		b.WriteString(m.renderStatusBar())
 	}
 
 	// Transcript
@@ -1391,121 +1391,57 @@ func (m *Model) renderWelcome() string {
 	var b strings.Builder
 	w := m.transcriptWidth()
 
-	b.WriteString("\n")
-
-	// ── Header ──────────────────────────────────────────────
-	// Compact brand header that works on narrow terminals
-	brandLine := "  " + t.AssistantDot.Render(assistantDot+" ") + t.WelcomeTitle.Render("vibe code")
-	if m.version != "" && m.version != "dev" {
-		versionTag := t.WelcomeVersion.Render("v" + m.version)
-		// Right-align version if there's room
-		pad := w - lipgloss.Width(brandLine) - lipgloss.Width(versionTag) - 2
-		if pad > 2 {
-			brandLine += strings.Repeat(" ", pad) + versionTag
-		} else {
-			brandLine += "  " + versionTag
+		// ── Big ASCII art title ───────────────────────────────
+		logo := []string{
+			"V     V  III  BBBB   EEEEE  CCCC   OOO   DDDD   EEEEE ",
+			"V     V   I   B   B  E     C     O     O D   D  E     ",
+			" V   V    I   BBBB   EEE   C     O     O D   D  EEE   ",
+			"  V V     I   B   B  E     C     O     O D   D  E     ",
+			"   V     III  BBBB   EEEEE  CCCC   OOO   DDDD   EEEEE ",
 		}
-	}
-	b.WriteString(brandLine + "\n")
-	b.WriteString("  " + t.WelcomeSubtitle.Render("AI-powered coding agent for your terminal") + "\n")
-	b.WriteString("\n")
+		logoW := lipgloss.Width(logo[0])
 
-	// ── Session info ────────────────────────────────────────
+	b.WriteString("\n")
+	for _, line := range logo {
+		pad := max(0, (w-logoW)/2)
+		b.WriteString(strings.Repeat(" ", pad) + t.WelcomeTitle.Render(line) + "\n")
+	}
+
+	// Version below the logo
+	if m.version != "" && m.version != "dev" {
+		vStr := t.WelcomeVersion.Render("v" + m.version)
+		pad := max(0, (w-lipgloss.Width(vStr))/2)
+		b.WriteString(strings.Repeat(" ", pad) + vStr + "\n")
+	}
+
+	b.WriteString("\n")
+	sub := t.WelcomeSubtitle.Render("AI-powered coding agent")
+	b.WriteString(strings.Repeat(" ", max(0, (w-lipgloss.Width(sub))/2)) + sub + "\n")
+
+	// ── Session info (centered) ────────────────────────────
 	var infoParts []string
 	if m.modelName != "" {
-		infoParts = append(infoParts, t.Dim.Render("Model: ")+t.Text.Render(m.modelName))
+		infoParts = append(infoParts, m.modelName)
 	}
 	if m.providerName != "" {
-		infoParts = append(infoParts, t.Dim.Render("Provider: ")+t.Text.Render(m.providerName))
+		infoParts = append(infoParts, m.providerName)
 	}
-	if m.dir != "" {
-		infoParts = append(infoParts, t.Dim.Render("Dir: ")+t.Text.Render(shortenPath(m.dir)))
-	}
-	if len(infoParts) > 0 {
-		infoLine := "  " + strings.Join(infoParts, t.Dim.Render("  ·  "))
-		b.WriteString(infoLine + "\n")
+	if len(infoParts) > 0 || m.dir != "" {
 		b.WriteString("\n")
 	}
-
-	// ── Keyboard Shortcuts ──────────────────────────────────
-	b.WriteString("  " + t.Bold.Render("Keyboard shortcuts") + "\n")
-	b.WriteString("\n")
-
-	shortcuts := []struct {
-		key  string
-		desc string
-	}{
-		{"enter", "Send a message"},
-		{"shift+enter", "New line (multi-line input)"},
-		{"ctrl+o", "Expand/collapse tool output"},
-		{"ctrl+c", "Stop generation or exit"},
-		{"shift+↑ / pgup", "Scroll up"},
-		{"shift+↓ / pgdn", "Scroll down"},
-		{"tab", "Autocomplete slash commands"},
+	if len(infoParts) > 0 {
+		infoLine := t.Dim.Render(strings.Join(infoParts, " · "))
+		p := max(0, (w-lipgloss.Width(infoLine))/2)
+		b.WriteString(strings.Repeat(" ", p) + infoLine + "\n")
 	}
-
-	keyWidth := 0
-	for _, s := range shortcuts {
-		if kw := lipgloss.Width(s.key); kw > keyWidth {
-			keyWidth = kw
-		}
-	}
-	keyWidth += 2 // padding
-
-	for _, s := range shortcuts {
-		paddedKey := s.key + strings.Repeat(" ", max(0, keyWidth-lipgloss.Width(s.key)))
-		b.WriteString("  " + t.WelcomeKey.Render(paddedKey) + t.WelcomeDesc.Render(s.desc) + "\n")
+	if m.dir != "" {
+		dirLine := t.Dim.Render(shortenPath(m.dir))
+		p := max(0, (w-lipgloss.Width(dirLine))/2)
+		b.WriteString(strings.Repeat(" ", p) + dirLine + "\n")
 	}
 
 	b.WriteString("\n")
-
-	// ── Slash Commands ──────────────────────────────────────
-	b.WriteString("  " + t.Bold.Render("Slash commands") + "\n")
-	b.WriteString("\n")
-
-	cmds := []struct {
-		name string
-		desc string
-	}{
-		{"/help", "Show available commands and shortcuts"},
-		{"/clear", "Clear conversation history"},
-		{"/compact", "Manually trigger context compaction"},
-		{"/model", "Switch AI model or provider"},
-		{"/config", "Show or edit configuration"},
-		{"/usage", "Show token usage and cost"},
-	}
-
-	cmdWidth := 0
-	for _, c := range cmds {
-		if cw := lipgloss.Width(c.name); cw > cmdWidth {
-			cmdWidth = cw
-		}
-	}
-	cmdWidth += 2
-
-	for _, c := range cmds {
-		paddedCmd := c.name + strings.Repeat(" ", max(0, cmdWidth-lipgloss.Width(c.name)))
-		b.WriteString("  " + t.WelcomeKey.Render(paddedCmd) + t.WelcomeDesc.Render(c.desc) + "\n")
-	}
-
-	b.WriteString("\n")
-
-	// ── Tips ────────────────────────────────────────────────
-	b.WriteString("  " + t.Bold.Render("Tips") + "\n")
-	b.WriteString("\n")
-
-	tips := []string{
-		"Start with a specific task like \"fix the bug in main.go\"",
-		"Use /model anytime to switch providers mid-session",
-		"Press ctrl+o to expand tool results and see full output",
-		"Multi-line input: type \\ at the end of a line, then press enter",
-	}
-	for _, tip := range tips {
-		b.WriteString("  " + t.WelcomeTip.Render("• ") + t.WelcomeDesc.Render(tip) + "\n")
-	}
-
-	b.WriteString("\n")
-	b.WriteString("  " + t.Dim.Render("Type a message below to get started →") + "\n")
+	b.WriteString(strings.Repeat(" ", max(0, (w-lipgloss.Width(t.Dim.Render("Type a message to get started →")))/2)) + t.Dim.Render("Type a message to get started →") + "\n")
 
 	return b.String()
 }
